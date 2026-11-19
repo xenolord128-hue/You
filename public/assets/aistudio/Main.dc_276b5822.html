@@ -1,0 +1,750 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Admin Dashboard</title>
+<script src="./vendor/react.js"></script>
+<script src="./vendor/react-dom.js"></script>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Hind+Siliguri:wght@400;500;600&amp;family=Inter:wght@400;500;600&amp;family=Space+Grotesk:wght@500;600;700&amp;display=swap">
+<style>
+body{margin:0;font-family:'Inter','Hind Siliguri',system-ui,sans-serif;color:#0A0A0A;background:#F1F1F0;-webkit-font-smoothing:antialiased}
+*{box-sizing:border-box}
+h1,h2,h3{font-family:'Space Grotesk','Inter',sans-serif;margin:0;font-weight:600;letter-spacing:-0.01em}
+button,input,select,textarea{font:inherit;color:inherit}
+button{cursor:pointer}
+:focus-visible{outline:2px solid #0A0A0A;outline-offset:2px}
+.card{background:#fff;border:1px solid #E2E2E1;border-radius:14px}
+.lbl{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#6A6A6A;font-weight:600}
+.btn{height:38px;padding:0 16px;border-radius:9px;border:1px solid #CFCFCE;background:#fff;font-size:13px;font-weight:500;white-space:nowrap}
+.btn:hover{background:#F1F1F0}
+.btn-dark{background:#0A0A0A;color:#fff;border-color:#0A0A0A}
+.btn-dark:hover{background:#2B2B2B}
+.btn-sm{height:30px;padding:0 11px;font-size:12px;border-radius:7px}
+.inp{height:40px;width:100%;border:1px solid #D4D4D3;border-radius:8px;padding:0 12px;background:#fff;font-size:13px}
+textarea.inp{height:84px;padding:10px 12px;resize:vertical}
+.inp-sm{height:34px;font-size:12px}
+.fld{display:flex;flex-direction:column;gap:6px;min-width:0}
+.pill{display:inline-block;padding:3px 10px;border-radius:999px;font-size:11px;font-weight:600;white-space:nowrap}
+.rw{display:grid;align-items:center;gap:14px;padding:13px 20px;border-top:1px solid #ECECEB;font-size:13px}
+.hd{background:#F7F7F6;border-top:none;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#6A6A6A;font-weight:600;padding-top:11px;padding-bottom:11px}
+.mut{color:#6A6A6A}
+.sub{font-size:12px;color:#6A6A6A}
+.nav{display:flex;align-items:center;justify-content:space-between;width:100%;height:42px;padding:0 14px;border:none;border-radius:9px;font-size:13px;text-align:left}
+.nav:hover{background:#1F1F1F}
+.stripe{background:repeating-linear-gradient(135deg,#E6E6E5 0,#E6E6E5 8px,#EFEFEE 8px,#EFEFEE 16px)}
+@media(max-width:820px){.side{flex-basis:100%!important;max-width:none!important}.main{padding:20px 16px!important}}
+</style>
+</helmet>
+
+<div style="display:flex;flex-wrap:wrap;align-items:stretch;background:#F1F1F0;min-height:1700px">
+
+<!-- SIDEBAR -->
+<aside class="side" style="flex:1 1 248px;max-width:248px;background:#0A0A0A;color:#fff;padding:26px 16px;display:flex;flex-direction:column;gap:26px">
+<div style="display:flex;align-items:center;gap:12px;padding:0 6px">
+<div style="width:38px;height:38px;border-radius:10px;background:#fff;color:#0A0A0A;display:flex;align-items:center;justify-content:center;font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:17px">S</div>
+<div style="display:flex;flex-direction:column;gap:2px"><span style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:15px">[YOUR STORE]</span><span style="font-size:11px;color:#9A9A9A;letter-spacing:.08em;text-transform:uppercase">Admin Console</span></div>
+</div>
+<nav aria-label="Admin sections" style="display:flex;flex-direction:column;gap:3px">
+<sc-for list="{{nav}}" as="n" hint-placeholder-count="11">
+<button class="nav" onClick="{{n.go}}" style="background:{{n.bg}};color:{{n.fg}};font-weight:{{n.weight}}">
+<span>{{n.label}}</span>
+<sc-if value="{{n.hasBadge}}" hint-placeholder-val="{{ false }}"><span style="min-width:22px;height:20px;padding:0 6px;border-radius:999px;background:{{n.badgeBg}};color:{{n.badgeFg}};font-size:11px;font-weight:600;display:inline-flex;align-items:center;justify-content:center">{{n.badge}}</span></sc-if>
+</button>
+</sc-for>
+</nav>
+<div style="margin-top:auto;display:flex;flex-direction:column;gap:8px;padding-top:20px;border-top:1px solid #262626">
+<div style="padding:0 6px 6px;display:flex;flex-direction:column;gap:3px"><span style="font-size:11px;color:#9A9A9A;letter-spacing:.08em;text-transform:uppercase">Session</span><span style="font-size:12px;color:#D4D4D3">Unlocked · 7h 42m left</span></div>
+<button onClick="{{lockSession}}" style="height:40px;border-radius:9px;border:1px solid #3A3A3A;background:transparent;color:#fff;font-size:13px;display:flex;align-items:center;justify-content:center;gap:8px">
+<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 8 0v4"></path></svg>Lock Session</button>
+<button onClick="{{signOut}}" style="height:40px;border-radius:9px;border:none;background:#fff;color:#0A0A0A;font-size:13px;font-weight:600">Sign Out</button>
+</div>
+</aside>
+
+<!-- MAIN -->
+<main class="main" style="flex:999 1 560px;min-width:0;padding:30px 38px;display:flex;flex-direction:column;gap:24px">
+
+<header style="display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:16px">
+<div style="display:flex;flex-direction:column;gap:6px;min-width:0">
+<span class="lbl">Tuesday, 17 November 2026</span>
+<h1 style="font-size:32px;line-height:1.1">{{head.title}}</h1>
+<span class="sub" style="font-size:13px">{{head.sub}}</span>
+</div>
+<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center">
+<span class="pill" style="background:#fff;border:1px solid #D4D4D3;color:#6A6A6A">Sample data</span>
+<button class="btn" onClick="{{backupJson}}">Backup JSON</button>
+<button class="btn btn-dark" onClick="{{syncCatalog}}">Sync Catalog</button>
+</div>
+</header>
+
+<!-- ================= OVERVIEW ================= -->
+<sc-if value="{{tab.overview}}" hint-placeholder-val="{{ true }}">
+<div style="display:flex;flex-direction:column;gap:22px">
+
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:14px">
+<sc-for list="{{cards}}" as="c" hint-placeholder-count="5">
+<div class="card" style="padding:20px;display:flex;flex-direction:column;gap:10px;background:{{c.bg}};color:{{c.fg}};border-color:{{c.bd}}">
+<span class="lbl" style="color:{{c.mut}}">{{c.label}}</span>
+<span style="font-family:'Space Grotesk',sans-serif;font-size:30px;font-weight:600;line-height:1;font-variant-numeric:tabular-nums">{{c.value}}</span>
+<span style="font-size:12px;color:{{c.mut}}">{{c.note}}</span>
+</div>
+</sc-for>
+</div>
+
+<div style="display:flex;flex-wrap:wrap;gap:22px;align-items:flex-start">
+<div style="flex:999 1 520px;min-width:0;display:flex;flex-direction:column;gap:22px">
+
+<section class="card" style="padding:24px;display:flex;flex-direction:column;gap:18px">
+<div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px"><h2 style="font-size:18px">Revenue by Category</h2><span class="sub">All time, cancelled excluded</span></div>
+<div style="display:flex;flex-direction:column;gap:13px">
+<sc-for list="{{revByCat}}" as="r" hint-placeholder-count="6">
+<div style="display:grid;grid-template-columns:110px minmax(0,1fr) 92px;gap:14px;align-items:center;font-size:13px">
+<span>{{r.name}}</span>
+<div style="height:12px;background:#EDEDEC;border-radius:6px;overflow:hidden"><div style="height:100%;width:{{r.pct}};background:{{r.color}};border-radius:6px"></div></div>
+<span style="text-align:right;font-variant-numeric:tabular-nums;font-weight:500">{{r.rev}}</span>
+</div>
+</sc-for>
+</div>
+</section>
+
+<div style="display:flex;flex-wrap:wrap;gap:22px">
+<section class="card" style="flex:1 1 300px;min-width:0;padding:24px;display:flex;flex-direction:column;gap:14px">
+<h2 style="font-size:18px">Best-Selling Products</h2>
+<div style="display:flex;flex-direction:column">
+<sc-for list="{{best}}" as="b" hint-placeholder-count="5">
+<div style="display:grid;grid-template-columns:26px minmax(0,1fr) auto;gap:12px;align-items:center;padding:11px 0;border-top:1px solid #ECECEB;font-size:13px">
+<span style="font-family:'Space Grotesk',sans-serif;font-weight:600;color:#6A6A6A">{{b.rank}}</span>
+<div style="display:flex;flex-direction:column;gap:2px;min-width:0"><span style="font-weight:500">{{b.name}}</span><span class="sub">{{b.units}} units sold</span></div>
+<span style="font-variant-numeric:tabular-nums;font-weight:500">{{b.rev}}</span>
+</div>
+</sc-for>
+</div>
+</section>
+
+<section class="card" style="flex:1 1 300px;min-width:0;padding:24px;display:flex;flex-direction:column;gap:14px">
+<h2 style="font-size:18px">Recent Orders</h2>
+<div style="display:flex;flex-direction:column">
+<sc-for list="{{recent}}" as="o" hint-placeholder-count="4">
+<div style="display:flex;flex-direction:column;gap:6px;padding:11px 0;border-top:1px solid #ECECEB;font-size:13px">
+<div style="display:flex;justify-content:space-between;gap:10px"><span style="font-weight:600">{{o.no}}</span><span style="font-variant-numeric:tabular-nums;font-weight:500">{{o.total}}</span></div>
+<div style="display:flex;justify-content:space-between;align-items:center;gap:10px"><span class="mut">{{o.name}} · {{o.city}}</span><span class="pill" style="{{o.statusStyle}}">{{o.status}}</span></div>
+</div>
+</sc-for>
+</div>
+</section>
+</div>
+</div>
+
+<div style="flex:1 1 320px;max-width:400px;min-width:0;display:flex;flex-direction:column;gap:22px">
+<section style="background:#0A0A0A;color:#fff;border-radius:14px;padding:24px;display:flex;flex-direction:column;gap:18px">
+<div style="display:flex;justify-content:space-between;align-items:center"><h2 style="font-size:18px">Storefront Pulse</h2><span style="display:flex;align-items:center;gap:6px;font-size:11px;color:#C8C8C7"><span style="width:7px;height:7px;border-radius:50%;background:#fff"></span>Live</span></div>
+<div style="display:flex;flex-direction:column">
+<div style="display:flex;justify-content:space-between;padding:12px 0;border-top:1px solid #2A2A2A;font-size:13px"><span style="color:#B5B5B4">Active categories</span><span style="font-weight:600">{{pulse.cats}}</span></div>
+<div style="display:flex;justify-content:space-between;padding:12px 0;border-top:1px solid #2A2A2A;font-size:13px"><span style="color:#B5B5B4">Active promo codes</span><span style="font-weight:600">{{pulse.promos}}</span></div>
+<div style="display:flex;justify-content:space-between;padding:12px 0;border-top:1px solid #2A2A2A;font-size:13px"><span style="color:#B5B5B4">Free shipping above</span><span style="font-weight:600">{{pulse.free}}</span></div>
+<div style="display:flex;justify-content:space-between;align-items:center;padding:12px 0 0;border-top:1px solid #2A2A2A;font-size:13px"><span style="color:#B5B5B4">Payments</span>
+<span style="display:flex;gap:6px"><span class="pill" style="border:1px solid #4A4A4A;color:#fff">COD</span><span class="pill" style="border:1px solid #4A4A4A;color:#fff">bKash</span><span class="pill" style="border:1px solid #4A4A4A;color:#fff">Nagad</span></span></div>
+</div>
+</section>
+
+<section class="card" style="padding:24px;display:flex;flex-direction:column;gap:14px">
+<div style="display:flex;justify-content:space-between;align-items:baseline"><h2 style="font-size:18px">Inventory Alerts</h2><span class="sub">15 or fewer</span></div>
+<div style="display:flex;flex-direction:column">
+<sc-for list="{{alerts}}" as="a" hint-placeholder-count="4">
+<div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center;padding:11px 0;border-top:1px solid #ECECEB;font-size:13px">
+<div style="display:flex;flex-direction:column;gap:2px;min-width:0"><span style="font-weight:500">{{a.name}}</span><span class="sub">{{a.sku}}</span></div>
+<span class="pill" style="{{a.style}}">{{a.label}}</span>
+</div>
+</sc-for>
+</div>
+<button class="btn btn-dark" onClick="{{goInventory}}">Open Inventory Manager</button>
+</section>
+</div>
+</div>
+
+</div>
+</sc-if>
+
+<!-- ================= PRODUCTS ================= -->
+<sc-if value="{{tab.products}}" hint-placeholder-val="{{ false }}">
+<div style="display:flex;flex-wrap:wrap;gap:22px;align-items:flex-start">
+<section class="card" style="flex:999 1 520px;min-width:0;overflow:hidden">
+<div style="padding:20px 20px 16px;display:flex;justify-content:space-between;align-items:baseline"><h2 style="font-size:18px">All Products</h2><span class="sub">{{productCount}} published</span></div>
+<div style="overflow-x:auto"><div style="min-width:800px">
+<div class="rw hd" style="grid-template-columns:2.4fr 1fr 1.1fr .7fr 1.5fr 1.3fr"><span>Product</span><span>Category</span><span>Price</span><span>Stock</span><span>Badges</span><span>Actions</span></div>
+<sc-for list="{{products}}" as="p" hint-placeholder-count="8">
+<div class="rw" style="grid-template-columns:2.4fr 1fr 1.1fr .7fr 1.5fr 1.3fr;background:{{p.rowBg}}">
+<div style="display:flex;align-items:center;gap:12px;min-width:0"><div class="stripe" style="width:42px;height:52px;border-radius:7px;flex:none"></div><div style="display:flex;flex-direction:column;gap:2px;min-width:0"><span style="font-weight:500">{{p.name}}</span><span class="sub">{{p.sku}}</span></div></div>
+<span>{{p.cat}}</span>
+<div style="display:flex;flex-direction:column;gap:2px;font-variant-numeric:tabular-nums"><span style="font-weight:500">{{p.price}}</span><span class="sub" style="text-decoration:line-through">{{p.old}}</span></div>
+<span style="font-variant-numeric:tabular-nums">{{p.stock}}</span>
+<span class="sub">{{p.badges}}</span>
+<div style="display:flex;gap:6px"><button class="btn btn-sm" onClick="{{p.edit}}">Edit</button><button class="btn btn-sm" onClick="{{p.del}}">Delete</button></div>
+</div>
+</sc-for>
+</div></div>
+</section>
+
+<section class="card" style="flex:1 1 340px;max-width:440px;min-width:0;padding:24px;display:flex;flex-direction:column;gap:16px">
+<div style="display:flex;flex-direction:column;gap:4px"><h2 style="font-size:18px">{{form.title}}</h2><span class="sub">{{form.sub}}</span></div>
+<div class="fld"><label class="lbl" for="pf-name">Product Name</label><input class="inp" id="pf-name" placeholder="e.g. Merino Crewneck Sweater"></div>
+<div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px">
+<div class="fld"><label class="lbl" for="pf-sku">SKU</label><input class="inp" id="pf-sku" placeholder="SW-101"></div>
+<div class="fld"><label class="lbl" for="pf-stock">Stock Qty</label><input class="inp" id="pf-stock" placeholder="24"></div>
+<div class="fld"><label class="lbl" for="pf-cat">Category</label><select class="inp" id="pf-cat"><option>Sweaters</option><option>Hoodies</option><option>Jackets</option><option>Panjabi</option></select></div>
+<div class="fld"><label class="lbl" for="pf-col">Collection</label><select class="inp" id="pf-col"><option>Winter Capsule</option><option>Everyday Basics</option><option>Eid Edit</option></select></div>
+<div class="fld"><label class="lbl" for="pf-price">Price (৳)</label><input class="inp" id="pf-price" placeholder="2450"></div>
+<div class="fld"><label class="lbl" for="pf-old">Regular / Old Price (৳)</label><input class="inp" id="pf-old" placeholder="2890"></div>
+</div>
+<div class="fld"><label class="lbl" for="pf-sizes">Sizes (comma-separated)</label><input class="inp" id="pf-sizes" placeholder="S, M, L, XL"></div>
+<div class="fld"><label class="lbl" for="pf-colors">Colours (Name:#Hex)</label><input class="inp" id="pf-colors" placeholder="Charcoal:#2B2B2B, Ash:#B8B8B7"></div>
+<div class="fld"><label class="lbl" for="pf-img">Primary Image</label><input class="inp" id="pf-img" placeholder="https://"></div>
+<div class="fld"><label class="lbl" for="pf-gal">Additional Gallery URLs</label><input class="inp" id="pf-gal" placeholder="One URL per line"></div>
+<div class="fld"><label class="lbl" for="pf-fab">Fabric / Material</label><input class="inp" id="pf-fab" placeholder="100% merino wool"></div>
+<div class="fld"><label class="lbl" for="pf-care">Care Instructions</label><input class="inp" id="pf-care" placeholder="Hand wash cold, dry flat"></div>
+<div class="fld"><label class="lbl" for="pf-fit">Size &amp; Fit Note</label><input class="inp" id="pf-fit" placeholder="Regular fit, model wears M"></div>
+<div class="fld"><div style="display:flex;justify-content:space-between;align-items:center"><label class="lbl" for="pf-desc">Description</label><button class="btn btn-sm" onClick="{{draftCopy}}">Draft Copy</button></div><textarea class="inp" id="pf-desc" placeholder="Drafted from name, category and material"></textarea></div>
+<div style="display:flex;flex-wrap:wrap;gap:8px">
+<sc-for list="{{badgeToggles}}" as="b" hint-placeholder-count="5">
+<button onClick="{{b.toggle}}" aria-pressed="{{b.on}}" style="height:32px;padding:0 13px;border-radius:999px;font-size:12px;font-weight:500;background:{{b.bg}};color:{{b.fg}};border:1px solid {{b.bd}}">{{b.label}}</button>
+</sc-for>
+</div>
+<button class="btn btn-dark" style="height:44px" onClick="{{publish}}">{{form.button}}</button>
+</section>
+</div>
+</sc-if>
+
+<!-- ================= INVENTORY ================= -->
+<sc-if value="{{tab.inventory}}" hint-placeholder-val="{{ false }}">
+<section class="card" style="overflow:hidden">
+<div style="padding:20px 20px 16px;display:flex;flex-wrap:wrap;justify-content:space-between;align-items:baseline;gap:8px"><h2 style="font-size:18px">Stock Control</h2><span class="sub">{{inv.low}} low, {{inv.out}} out of stock</span></div>
+<div style="overflow-x:auto"><div style="min-width:860px">
+<div class="rw hd" style="grid-template-columns:2.2fr 1fr 1.2fr .7fr 1.1fr 2fr"><span>Product</span><span>Category</span><span>Sizes</span><span>Stock</span><span>Status</span><span>Quick Adjust</span></div>
+<sc-for list="{{invRows}}" as="p" hint-placeholder-count="8">
+<div class="rw" style="grid-template-columns:2.2fr 1fr 1.2fr .7fr 1.1fr 2fr">
+<div style="display:flex;flex-direction:column;gap:2px;min-width:0"><span style="font-weight:500">{{p.name}}</span><span class="sub">{{p.sku}}</span></div>
+<span>{{p.cat}}</span><span class="mut">{{p.sizes}}</span>
+<span style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:16px;font-variant-numeric:tabular-nums">{{p.stock}}</span>
+<span><span class="pill" style="{{p.style}}">{{p.label}}</span></span>
+<div style="display:flex;gap:6px"><button class="btn btn-sm" onClick="{{p.plus}}">+10</button><button class="btn btn-sm" onClick="{{p.minus}}">-5</button><button class="btn btn-sm" onClick="{{p.zero}}">Set 0</button></div>
+</div>
+</sc-for>
+</div></div>
+</section>
+</sc-if>
+
+<!-- ================= ORDERS ================= -->
+<sc-if value="{{tab.orders}}" hint-placeholder-val="{{ false }}">
+<section class="card" style="overflow:hidden">
+<div style="padding:20px 20px 16px;display:flex;flex-wrap:wrap;justify-content:space-between;align-items:baseline;gap:8px"><h2 style="font-size:18px">All Orders</h2><span class="sub">Status changes appear on the customer's Track Order page</span></div>
+<div style="overflow-x:auto"><div style="min-width:1240px">
+<div class="rw hd" style="grid-template-columns:1.1fr 1.5fr 1.2fr 1.6fr .9fr 1.5fr 1.5fr .9fr"><span>Order</span><span>Customer</span><span>Location</span><span>Payment</span><span>Total</span><span>Order Status</span><span>Delivery Note</span><span>Alert</span></div>
+<sc-for list="{{orders}}" as="o" hint-placeholder-count="8">
+<div class="rw" style="grid-template-columns:1.1fr 1.5fr 1.2fr 1.6fr .9fr 1.5fr 1.5fr .9fr;align-items:start">
+<div style="display:flex;flex-direction:column;gap:3px"><span style="font-weight:600">{{o.no}}</span><span class="sub">{{o.date}}</span></div>
+<div style="display:flex;flex-direction:column;gap:3px"><span style="font-weight:500">{{o.name}}</span><span class="sub">{{o.phone}}</span></div>
+<div style="display:flex;flex-direction:column;gap:3px"><span>{{o.area}}</span><span class="sub">{{o.city}}</span></div>
+<div style="display:flex;flex-direction:column;gap:6px"><span class="sub" style="font-weight:600;color:#0A0A0A">{{o.method}}</span>
+<select class="inp inp-sm" aria-label="Payment status" value="{{o.pay}}" onChange="{{o.setPay}}"><option value="Pending">Pending</option><option value="Paid">Paid</option><option value="Failed">Failed</option><option value="Refunded">Refunded</option></select></div>
+<span style="font-weight:600;font-variant-numeric:tabular-nums">{{o.total}}</span>
+<div style="display:flex;flex-direction:column;gap:6px"><span><span class="pill" style="{{o.statusStyle}}">{{o.status}}</span></span>
+<select class="inp inp-sm" aria-label="Order status" value="{{o.status}}" onChange="{{o.setStatus}}"><sc-for list="{{statuses}}" as="s" hint-placeholder-count="8"><option value="{{s}}">{{s}}</option></sc-for></select></div>
+<input class="inp inp-sm" aria-label="Delivery note" placeholder="Courier or tracking note" value="{{o.note}}" onChange="{{o.setNote}}" onBlur="{{o.saveNote}}">
+<button class="btn btn-sm" onClick="{{o.notify}}">Notify Chat</button>
+</div>
+</sc-for>
+</div></div>
+</section>
+</sc-if>
+
+<!-- ================= CUSTOMERS ================= -->
+<sc-if value="{{tab.customers}}" hint-placeholder-val="{{ false }}">
+<section class="card" style="overflow:hidden">
+<div style="padding:20px 20px 16px;display:flex;justify-content:space-between;align-items:baseline"><h2 style="font-size:18px">Customer List</h2><span class="sub">Built automatically from order data</span></div>
+<div style="overflow-x:auto"><div style="min-width:820px">
+<div class="rw hd" style="grid-template-columns:1.6fr 2fr 1.3fr 1.2fr .8fr 1fr"><span>Name</span><span>Email</span><span>Mobile</span><span>District</span><span>Orders</span><span style="text-align:right">Total Spend</span></div>
+<sc-for list="{{customers}}" as="c" hint-placeholder-count="6">
+<div class="rw" style="grid-template-columns:1.6fr 2fr 1.3fr 1.2fr .8fr 1fr">
+<span style="font-weight:500">{{c.name}}</span><span class="mut">{{c.email}}</span><span>{{c.phone}}</span><span>{{c.city}}</span><span style="font-variant-numeric:tabular-nums">{{c.orders}}</span><span style="text-align:right;font-weight:600;font-variant-numeric:tabular-nums">{{c.spend}}</span>
+</div>
+</sc-for>
+</div></div>
+</section>
+</sc-if>
+
+<!-- ================= CATEGORIES ================= -->
+<sc-if value="{{tab.categories}}" hint-placeholder-val="{{ false }}">
+<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:18px">
+<sc-for list="{{categories}}" as="c" hint-placeholder-count="6">
+<section class="card" style="overflow:hidden;display:flex;flex-direction:column">
+<div class="stripe" style="height:150px;display:flex;align-items:flex-end;padding:12px"><span class="pill" style="background:#0A0A0A;color:#fff">{{c.count}} products</span></div>
+<div style="padding:18px 20px 20px;display:flex;flex-direction:column;gap:10px">
+<h3 style="font-size:17px">{{c.name}}</h3>
+<span class="sub" style="font-size:13px;line-height:1.5">{{c.desc}}</span>
+<sc-if value="{{c.editing}}" hint-placeholder-val="{{ false }}">
+<div style="display:flex;flex-direction:column;gap:8px"><textarea class="inp" aria-label="Category description" value="{{c.desc}}" onChange="{{c.setDesc}}"></textarea>
+<div style="display:flex;gap:8px"><button class="btn btn-sm btn-dark" onClick="{{c.save}}">Save</button><button class="btn btn-sm" onClick="{{c.cancel}}">Cancel</button></div></div>
+</sc-if>
+<sc-if value="{{c.notEditing}}" hint-placeholder-val="{{ true }}"><div><button class="btn btn-sm" onClick="{{c.edit}}">Edit Description</button></div></sc-if>
+</div>
+</section>
+</sc-for>
+</div>
+</sc-if>
+
+<!-- ================= COLLECTIONS ================= -->
+<sc-if value="{{tab.collections}}" hint-placeholder-val="{{ false }}">
+<div style="display:flex;flex-wrap:wrap;gap:22px;align-items:flex-start">
+<div style="flex:999 1 520px;min-width:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:18px">
+<sc-for list="{{collections}}" as="c" hint-placeholder-count="3">
+<section class="card" style="overflow:hidden;display:flex;flex-direction:column">
+<div class="stripe" style="height:170px"></div>
+<div style="padding:18px 20px 20px;display:flex;flex-direction:column;gap:10px">
+<h3 style="font-size:17px">{{c.title}}</h3>
+<span class="sub" style="font-size:13px;line-height:1.5">{{c.desc}}</span>
+<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><span class="sub">{{c.count}} products</span><button class="btn btn-sm" onClick="{{c.visit}}">Visit Live Page</button></div>
+</div>
+</section>
+</sc-for>
+</div>
+<section class="card" style="flex:1 1 320px;max-width:400px;min-width:0;padding:24px;display:flex;flex-direction:column;gap:16px">
+<div style="display:flex;flex-direction:column;gap:4px"><h2 style="font-size:18px">Add Collection</h2><span class="sub">A capsule appears on the storefront once published</span></div>
+<div class="fld"><label class="lbl" for="cf-title">Title</label><input class="inp" id="cf-title" placeholder="Winter Capsule"></div>
+<div class="fld"><label class="lbl" for="cf-desc">Description</label><textarea class="inp" id="cf-desc" placeholder="Short line shown on the collection page"></textarea></div>
+<div class="fld"><label class="lbl" for="cf-img">Cover Image</label><input class="inp" id="cf-img" placeholder="https://"></div>
+<button class="btn btn-dark" style="height:44px" onClick="{{addCollection}}">Add Collection</button>
+</section>
+</div>
+</sc-if>
+
+<!-- ================= COUPONS ================= -->
+<sc-if value="{{tab.coupons}}" hint-placeholder-val="{{ false }}">
+<div style="display:flex;flex-wrap:wrap;gap:22px;align-items:flex-start">
+<section class="card" style="flex:999 1 520px;min-width:0;overflow:hidden">
+<div style="padding:20px 20px 16px"><h2 style="font-size:18px">Promo Codes</h2></div>
+<div style="overflow-x:auto"><div style="min-width:820px">
+<div class="rw hd" style="grid-template-columns:1.3fr 1fr 1fr 1.1fr 1.1fr 1.3fr"><span>Code</span><span>Discount</span><span>Min. Order</span><span>Used</span><span>Expires</span><span>Actions</span></div>
+<sc-for list="{{coupons}}" as="c" hint-placeholder-count="3">
+<div class="rw" style="grid-template-columns:1.3fr 1fr 1fr 1.1fr 1.1fr 1.3fr">
+<div style="display:flex;flex-direction:column;gap:5px;align-items:flex-start"><span style="font-weight:600;letter-spacing:.04em">{{c.code}}</span><span class="pill" style="{{c.style}}">{{c.status}}</span></div>
+<span>{{c.discount}}</span><span style="font-variant-numeric:tabular-nums">{{c.min}}</span>
+<div style="display:flex;flex-direction:column;gap:5px"><span style="font-variant-numeric:tabular-nums">{{c.used}}</span><div style="height:4px;background:#E6E6E5;border-radius:2px;overflow:hidden"><div style="height:100%;width:{{c.pct}};background:#0A0A0A"></div></div></div>
+<span class="mut">{{c.expiry}}</span>
+<div style="display:flex;gap:6px"><button class="btn btn-sm" onClick="{{c.toggle}}">{{c.toggleLabel}}</button><button class="btn btn-sm" onClick="{{c.del}}">Delete</button></div>
+</div>
+</sc-for>
+</div></div>
+</section>
+<section class="card" style="flex:1 1 320px;max-width:400px;min-width:0;padding:24px;display:flex;flex-direction:column;gap:16px">
+<h2 style="font-size:18px">New Coupon</h2>
+<div class="fld"><label class="lbl" for="cp-code">Code</label><input class="inp" id="cp-code" placeholder="WINTER10"></div>
+<div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px">
+<div class="fld"><label class="lbl" for="cp-type">Discount Type</label><select class="inp" id="cp-type"><option>Percentage %</option><option>Fixed ৳</option></select></div>
+<div class="fld"><label class="lbl" for="cp-val">Value</label><input class="inp" id="cp-val" placeholder="10"></div>
+<div class="fld"><label class="lbl" for="cp-min">Minimum Order (৳)</label><input class="inp" id="cp-min" placeholder="1500"></div>
+<div class="fld"><label class="lbl" for="cp-lim">Usage Limit</label><input class="inp" id="cp-lim" placeholder="200"></div>
+</div>
+<div class="fld"><label class="lbl" for="cp-exp">Expiry Date</label><input class="inp" id="cp-exp" type="date"></div>
+<button class="btn btn-dark" style="height:44px" onClick="{{createCoupon}}">Create Coupon</button>
+</section>
+</div>
+</sc-if>
+
+<!-- ================= REVIEWS ================= -->
+<sc-if value="{{tab.reviews}}" hint-placeholder-val="{{ false }}">
+<section class="card" style="overflow:hidden">
+<div style="padding:20px 20px 16px;display:flex;justify-content:space-between;align-items:baseline"><h2 style="font-size:18px">Customer Reviews</h2><span class="sub">Average {{reviewAvg}} out of 5</span></div>
+<div>
+<sc-for list="{{reviews}}" as="r" hint-placeholder-count="6">
+<div style="display:flex;flex-wrap:wrap;gap:12px 28px;padding:18px 20px;border-top:1px solid #ECECEB">
+<div style="flex:0 0 220px;display:flex;flex-direction:column;gap:4px;min-width:0"><span style="font-weight:600;font-size:14px">{{r.name}}</span><span class="sub">{{r.product}}</span></div>
+<div style="flex:1 1 300px;min-width:0;display:flex;flex-direction:column;gap:6px">
+<span style="font-size:15px;letter-spacing:2px" aria-label="{{r.rating}} out of 5 stars">{{r.stars}}</span>
+<span style="font-size:13px;line-height:1.55;color:#2B2B2B">{{r.text}}</span>
+</div>
+</div>
+</sc-for>
+</div>
+</section>
+</sc-if>
+
+<!-- ================= SETTINGS ================= -->
+<sc-if value="{{tab.settings}}" hint-placeholder-val="{{ false }}">
+<div style="display:flex;flex-direction:column;gap:22px">
+<section class="card" style="padding:24px;display:flex;flex-direction:column;gap:18px">
+<div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:12px"><div style="display:flex;flex-direction:column;gap:4px"><h2 style="font-size:18px">Delivery &amp; Store Settings</h2><span class="sub">Charges, announcement bar, pixel and contact channels</span></div><button class="btn btn-dark" onClick="{{saveSettings}}">Save Settings</button></div>
+<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:16px">
+<sc-for list="{{settingsFields}}" as="f" hint-placeholder-count="13">
+<div class="fld"><label class="lbl" for="{{f.id}}">{{f.label}}</label><input class="inp" id="{{f.id}}" value="{{f.value}}"></div>
+</sc-for>
+</div>
+</section>
+
+<div style="display:flex;flex-wrap:wrap;gap:22px;align-items:flex-start">
+<section class="card" style="flex:1 1 460px;min-width:0;padding:24px;display:flex;flex-direction:column;gap:14px">
+<div style="display:flex;justify-content:space-between;align-items:center;gap:10px"><h2 style="font-size:18px">Gmail Support Inbox</h2><button class="btn btn-sm" onClick="{{syncInbox}}">Sync Inbox</button></div>
+<div style="display:flex;flex-direction:column">
+<sc-for list="{{inbox}}" as="m" hint-placeholder-count="4">
+<button onClick="{{m.open}}" style="text-align:left;display:flex;flex-direction:column;gap:3px;padding:12px 12px;border:none;border-top:1px solid #ECECEB;background:{{m.bg}};border-radius:0;width:100%">
+<span style="display:flex;justify-content:space-between;gap:10px;font-size:13px"><span style="font-weight:600">{{m.from}}</span><span class="sub">{{m.time}}</span></span>
+<span style="font-size:13px">{{m.subject}}</span>
+</button>
+</sc-for>
+</div>
+<sc-if value="{{reply.open}}" hint-placeholder-val="{{ false }}">
+<div style="border:1px solid #D4D4D3;border-radius:10px;padding:16px;display:flex;flex-direction:column;gap:10px">
+<span class="lbl">Reply to {{reply.to}}</span>
+<textarea class="inp" aria-label="Reply message" placeholder="Write your reply"></textarea>
+<sc-if value="{{reply.confirm}}" hint-placeholder-val="{{ false }}"><div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px"><span style="font-size:13px">Send this reply from Gmail to {{reply.to}}?</span><button class="btn btn-sm btn-dark" onClick="{{sendReply}}">Confirm Send</button><button class="btn btn-sm" onClick="{{cancelReply}}">Cancel</button></div></sc-if>
+<sc-if value="{{reply.notConfirm}}" hint-placeholder-val="{{ true }}"><div><button class="btn btn-sm btn-dark" onClick="{{askConfirm}}">Send Reply</button></div></sc-if>
+</div>
+</sc-if>
+</section>
+
+<section class="card" style="flex:1 1 360px;min-width:0;padding:24px;display:flex;flex-direction:column;gap:14px">
+<div style="display:flex;justify-content:space-between;align-items:center;gap:10px"><h2 style="font-size:18px">Google Chat Alerts</h2><button class="btn btn-sm" onClick="{{loadSpaces}}">Load Spaces</button></div>
+<div style="display:flex;flex-direction:column;gap:8px">
+<sc-for list="{{spaces}}" as="s" hint-placeholder-count="3">
+<button onClick="{{s.pick}}" style="text-align:left;display:flex;justify-content:space-between;align-items:center;gap:10px;padding:12px 14px;border-radius:10px;font-size:13px;background:{{s.bg}};color:{{s.fg}};border:1px solid {{s.bd}}"><span style="font-weight:500">{{s.name}}</span><span style="font-size:12px;opacity:.75">{{s.members}} members</span></button>
+</sc-for>
+</div>
+<div style="display:flex;flex-wrap:wrap;gap:8px"><button class="btn btn-sm" onClick="{{draftLow}}">Draft Low-Stock Summary</button><button class="btn btn-sm" onClick="{{draftDispatch}}">Draft Dispatch Alert</button></div>
+<textarea class="inp" aria-label="Chat message" style="height:120px" value="{{chatDraft}}" onChange="{{setChatDraft}}" placeholder="Pick a space, then draft a message"></textarea>
+<button class="btn btn-dark" style="height:42px" onClick="{{postChat}}">Post to Team Chat</button>
+</section>
+</div>
+</div>
+</sc-if>
+
+<!-- ================= GUIDE ================= -->
+<sc-if value="{{tab.guide}}" hint-placeholder-val="{{ false }}">
+<div style="display:flex;flex-wrap:wrap;gap:22px;align-items:flex-start">
+<section class="card" style="flex:999 1 520px;min-width:0;padding:24px;display:flex;flex-direction:column;gap:6px">
+<h2 style="font-size:18px;margin-bottom:10px">Store Owner Manual</h2>
+<sc-for list="{{guide}}" as="g" hint-placeholder-count="16">
+<div style="display:grid;grid-template-columns:34px minmax(0,1fr);gap:14px;padding:13px 0;border-top:1px solid #ECECEB">
+<span style="width:28px;height:28px;border-radius:50%;background:#0A0A0A;color:#fff;font-size:12px;font-weight:600;display:flex;align-items:center;justify-content:center">{{g.n}}</span>
+<div style="display:flex;flex-direction:column;gap:3px"><span style="font-weight:600;font-size:14px">{{g.title}}</span><span class="sub" style="font-size:13px;line-height:1.5">{{g.text}}</span></div>
+</div>
+</sc-for>
+</section>
+<div style="flex:1 1 320px;max-width:400px;min-width:0;display:flex;flex-direction:column;gap:22px">
+<section style="background:#0A0A0A;color:#fff;border-radius:14px;padding:24px;display:flex;flex-direction:column;gap:14px">
+<h2 style="font-size:18px">Store Backup</h2>
+<span style="font-size:13px;line-height:1.55;color:#C8C8C7">Settings, categories, collections, products, coupons, orders and reviews in one JSON file.</span>
+<button onClick="{{backupJson}}" style="height:44px;border-radius:9px;border:none;background:#fff;color:#0A0A0A;font-weight:600;font-size:13px">Export Store Backup JSON</button>
+</section>
+<section class="card" style="padding:24px;display:flex;flex-direction:column;gap:12px">
+<h2 style="font-size:18px">Client Handover Checklist</h2>
+<sc-for list="{{checklist}}" as="k" hint-placeholder-count="6">
+<button onClick="{{k.toggle}}" aria-pressed="{{k.done}}" style="display:flex;align-items:center;gap:12px;text-align:left;border:none;background:transparent;padding:6px 0;font-size:13px">
+<span style="width:20px;height:20px;border-radius:5px;flex:none;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;background:{{k.bg}};color:{{k.fg}};border:1px solid #0A0A0A">{{k.mark}}</span><span>{{k.label}}</span></button>
+</sc-for>
+</section>
+</div>
+</div>
+</sc-if>
+
+</main>
+
+<sc-if value="{{toast}}" hint-placeholder-val="{{ false }}">
+<div role="status" style="position:fixed;right:24px;bottom:24px;background:#0A0A0A;color:#fff;padding:13px 20px;border-radius:10px;font-size:13px;box-shadow:0 8px 28px rgba(0,0,0,.25);z-index:50">{{toast}}</div>
+</sc-if>
+</div>
+</x-dc>
+
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1700}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = {
+      tab: 'overview', toast: '', editing: 0, replyId: 0, replyConfirm: false, spaceId: 1, chatDraft: '',
+      badgeOn: { 'New Arrival': true, 'Featured': false, 'Best Seller': false, 'Trending': false, 'Winter Collection': true },
+      catEdit: 0, catDraft: '',
+      notes: {},
+      checks: { 0: true, 1: true, 2: false, 3: false, 4: false, 5: false },
+      products: [
+        { id: 1, name: 'Merino Crewneck Sweater', sku: 'SW-101', cat: 'Sweaters', sizes: 'S, M, L, XL', price: 2450, old: 2890, stock: 24, sold: 58, badges: 'Winter Collection' },
+        { id: 2, name: 'Heavy Fleece Hoodie', sku: 'HD-204', cat: 'Hoodies', sizes: 'M, L, XL, XXL', price: 1890, old: 2190, stock: 12, sold: 91, badges: 'Best Seller · Trending' },
+        { id: 3, name: 'Quilted Bomber Jacket', sku: 'JK-310', cat: 'Jackets', sizes: 'M, L, XL', price: 3950, old: 4600, stock: 7, sold: 34, badges: 'Featured · Winter Collection' },
+        { id: 4, name: 'Cotton Panjabi, Ash', sku: 'PJ-045', cat: 'Panjabi', sizes: '38, 40, 42, 44', price: 2250, old: 2250, stock: 40, sold: 76, badges: 'New Arrival' },
+        { id: 5, name: 'Wool Blend Shawl', sku: 'SH-512', cat: 'Shawls', sizes: 'Free size', price: 1650, old: 1950, stock: 0, sold: 29, badges: 'Winter Collection' },
+        { id: 6, name: 'Straight Chino Trouser', sku: 'TR-607', cat: 'Trousers', sizes: '30, 32, 34, 36, 38', price: 1750, old: 1750, stock: 31, sold: 47, badges: '' },
+        { id: 7, name: 'Linen Panjabi, Charcoal', sku: 'PJ-052', cat: 'Panjabi', sizes: '38, 40, 42, 44', price: 2490, old: 2790, stock: 15, sold: 41, badges: 'Featured' },
+        { id: 8, name: 'Knit Beanie', sku: 'AC-701', cat: 'Accessories', sizes: 'Free size', price: 590, old: 690, stock: 62, sold: 120, badges: 'Best Seller' }
+      ],
+      orders: [
+        { id: 1, no: '#TS-10482', date: '16 Nov 2026', name: 'Farhana Akter', phone: '01712-345601', area: 'Savar Bazar', city: 'Dhaka', method: 'bKash', pay: 'Paid', total: 4340, status: 'Order Received' },
+        { id: 2, no: '#TS-10481', date: '16 Nov 2026', name: 'Rafiq Hasan', phone: '01811-220943', area: 'Panchlaish', city: 'Chattogram', method: 'COD', pay: 'Pending', total: 3950, status: 'Order Confirmed' },
+        { id: 3, no: '#TS-10478', date: '15 Nov 2026', name: 'Nusrat Jahan', phone: '01911-884520', area: 'Dhanmondi', city: 'Dhaka', method: 'Nagad', pay: 'Paid', total: 2520, status: 'Packed' },
+        { id: 4, no: '#TS-10474', date: '15 Nov 2026', name: 'Tanvir Ahmed', phone: '01611-537082', area: 'Zindabazar', city: 'Sylhet', method: 'COD', pay: 'Pending', total: 5980, status: 'Shipped' },
+        { id: 5, no: '#TS-10469', date: '14 Nov 2026', name: 'Mehedi Hasan', phone: '01511-909313', area: 'Mirpur 10', city: 'Dhaka', method: 'bKash', pay: 'Paid', total: 1960, status: 'Out for Delivery' },
+        { id: 6, no: '#TS-10463', date: '13 Nov 2026', name: 'Sadia Islam', phone: '01711-662208', area: 'Boalia', city: 'Rajshahi', method: 'Nagad', pay: 'Refunded', total: 3240, status: 'Cancelled' },
+        { id: 7, no: '#TS-10458', date: '12 Nov 2026', name: 'Imran Hossain', phone: '01844-317765', area: 'Sonadanga', city: 'Khulna', method: 'COD', pay: 'Paid', total: 7400, status: 'Delivered' },
+        { id: 8, no: '#TS-10451', date: '11 Nov 2026', name: 'Rubina Yasmin', phone: '01917-440186', area: 'Uttara Sector 7', city: 'Dhaka', method: 'bKash', pay: 'Paid', total: 2540, status: 'Delivered' }
+      ],
+      coupons: [
+        { id: 1, code: 'WINTER10', type: '%', value: 10, min: 1500, limit: 200, used: 64, expiry: '31 Dec 2026', active: true },
+        { id: 2, code: 'WELCOME200', type: '৳', value: 200, min: 1000, limit: 500, used: 188, expiry: '15 Jan 2027', active: true },
+        { id: 3, code: 'EID15', type: '%', value: 15, min: 2000, limit: 100, used: 100, expiry: '30 Jun 2026', active: false }
+      ],
+      categories: [
+        { id: 1, name: 'Sweaters', desc: 'Merino and wool-blend knitwear for Dhaka winters.' },
+        { id: 2, name: 'Hoodies', desc: 'Heavy fleece pullovers and zip hoodies.' },
+        { id: 3, name: 'Jackets', desc: 'Quilted, bomber and light padded outerwear.' },
+        { id: 4, name: 'Panjabi', desc: 'Cotton and linen panjabi for everyday and festive wear.' },
+        { id: 5, name: 'Shawls', desc: 'Soft wool-blend shawls and wraps.' },
+        { id: 6, name: 'Trousers', desc: 'Straight chinos and relaxed trousers.' }
+      ],
+      inboxSel: 0
+    };
+  }
+
+  say(msg) {
+    this.setState({ toast: msg });
+    clearTimeout(this._t);
+    this._t = setTimeout(() => this.setState({ toast: '' }), 2600);
+  }
+
+  pill(k) {
+    const P = {
+      'Delivered': ['#0A0A0A', '#FFFFFF', '#0A0A0A'], 'Out for Delivery': ['#2E2E2E', '#FFFFFF', '#2E2E2E'], 'Shipped': ['#4A4A4A', '#FFFFFF', '#4A4A4A'],
+      'Packed': ['#CFCFCE', '#0A0A0A', '#CFCFCE'], 'Processing': ['#E4E4E3', '#0A0A0A', '#E4E4E3'],
+      'Order Confirmed': ['#FFFFFF', '#0A0A0A', '#0A0A0A'], 'Order Received': ['#FFFFFF', '#0A0A0A', '#9A9A99'], 'Cancelled': ['#FFFFFF', '#6A6A6A', '#C4C4C3'],
+      'Active': ['#0A0A0A', '#FFFFFF', '#0A0A0A'], 'Paused': ['#FFFFFF', '#6A6A6A', '#C4C4C3'],
+      'Low Stock': ['#CFCFCE', '#0A0A0A', '#CFCFCE'], 'Out of Stock': ['#0A0A0A', '#FFFFFF', '#0A0A0A'], 'In Stock': ['#FFFFFF', '#0A0A0A', '#C4C4C3']
+    };
+    const v = P[k] || P['Order Received'];
+    return 'background:' + v[0] + ';color:' + v[1] + ';border:1px solid ' + v[2];
+  }
+
+  money(n) { return '৳' + Number(n).toLocaleString('en-IN'); }
+
+  adjust(id, f) {
+    this.setState((st) => ({ products: st.products.map((p) => p.id === id ? { ...p, stock: Math.max(0, f(p.stock)) } : p) }));
+  }
+
+  updOrder(id, patch) {
+    this.setState((st) => ({ orders: st.orders.map((o) => o.id === id ? { ...o, ...patch } : o) }));
+  }
+
+  renderVals() {
+    const s = this.state;
+    const money = (n) => this.money(n);
+    const tabs = [
+      ['overview', 'Overview & Reports', 'Sales, revenue and what needs attention today.'],
+      ['products', 'Products', 'Publish, edit and remove items from the catalogue.'],
+      ['inventory', 'Inventory', 'Watch stock levels and adjust them in one tap.'],
+      ['orders', 'Orders', 'Confirm, pack and dispatch every order.'],
+      ['customers', 'Customers', 'Everyone who has ordered from the store.'],
+      ['categories', 'Categories', 'Cover, name and description for each category.'],
+      ['collections', 'Collections', 'Capsules that group products on the storefront.'],
+      ['coupons', 'Coupons', 'Promo codes, limits and expiry dates.'],
+      ['reviews', 'Reviews', 'What customers say about your products.'],
+      ['settings', 'Settings & Workspace', 'Delivery charges, pixel, Gmail and Google Chat.'],
+      ['guide', 'Client Guide & Backup', 'Owner manual, backup export and handover checklist.']
+    ];
+    const lowCount = s.products.filter((p) => p.stock <= 15).length;
+    const newOrders = s.orders.filter((o) => o.status === 'Order Received').length;
+    const nav = tabs.map(([k, l]) => {
+      const on = s.tab === k;
+      let badge = '';
+      if (k === 'orders' && newOrders) badge = String(newOrders);
+      if (k === 'inventory' && lowCount) badge = String(lowCount);
+      return { label: l, go: () => this.setState({ tab: k }), bg: on ? '#FFFFFF' : 'transparent', fg: on ? '#0A0A0A' : '#B5B5B4', weight: on ? '600' : '500',
+        hasBadge: !!badge, badge, badgeBg: on ? '#0A0A0A' : '#2E2E2E', badgeFg: '#FFFFFF' };
+    });
+    const tab = {};
+    tabs.forEach(([k]) => { tab[k] = s.tab === k; });
+    const cur = tabs.find((t) => t[0] === s.tab);
+
+    // overview data
+    const live = s.orders.filter((o) => o.status !== 'Cancelled');
+    const totalSales = live.reduce((a, o) => a + o.total, 0);
+    const customerCount = 6;
+    const cards = [
+      { label: 'Total Sales', value: money(totalSales), note: 'Cancelled orders excluded', bg: '#0A0A0A', fg: '#FFFFFF', bd: '#0A0A0A', mut: '#B5B5B4' },
+      { label: 'Total Orders', value: String(s.orders.length), note: newOrders + ' awaiting confirmation', bg: '#FFFFFF', fg: '#0A0A0A', bd: '#E2E2E1', mut: '#6A6A6A' },
+      { label: 'Customers', value: String(customerCount), note: 'From order data', bg: '#FFFFFF', fg: '#0A0A0A', bd: '#E2E2E1', mut: '#6A6A6A' },
+      { label: 'Products', value: String(s.products.length), note: s.categories.length + ' categories', bg: '#FFFFFF', fg: '#0A0A0A', bd: '#E2E2E1', mut: '#6A6A6A' },
+      { label: 'Low Stock', value: String(lowCount), note: '15 units or fewer', bg: '#E4E4E3', fg: '#0A0A0A', bd: '#E4E4E3', mut: '#4A4A4A' }
+    ];
+    const catRev = {};
+    s.products.forEach((p) => { catRev[p.cat] = (catRev[p.cat] || 0) + p.price * p.sold; });
+    const catArr = Object.keys(catRev).map((k) => ({ name: k, v: catRev[k] })).sort((a, b) => b.v - a.v);
+    const maxRev = catArr.length ? catArr[0].v : 1;
+    const shades = ['#0A0A0A', '#2E2E2E', '#4A4A4A', '#7A7A79', '#A3A3A2', '#C4C4C3'];
+    const revByCat = catArr.map((c, i) => ({ name: c.name, rev: money(c.v), pct: Math.round(c.v / maxRev * 100) + '%', color: shades[Math.min(i, 5)] }));
+    const best = s.products.slice().sort((a, b) => b.sold - a.sold).slice(0, 5).map((p, i) => ({ rank: String(i + 1), name: p.name, units: p.sold, rev: money(p.price * p.sold) }));
+    const recent = s.orders.slice(0, 4).map((o) => ({ no: o.no, name: o.name, city: o.city, total: money(o.total), status: o.status, statusStyle: this.pill(o.status) }));
+    const lowList = s.products.filter((p) => p.stock <= 15).sort((a, b) => a.stock - b.stock);
+    const alerts = lowList.slice(0, 5).map((p) => ({ name: p.name, sku: p.sku, label: p.stock === 0 ? 'Out of Stock' : p.stock + ' left', style: this.pill(p.stock === 0 ? 'Out of Stock' : 'Low Stock') }));
+    const activePromos = s.coupons.filter((c) => c.active).length;
+
+    // products
+    const products = s.products.map((p) => ({
+      name: p.name, sku: p.sku, cat: p.cat, price: money(p.price), old: p.old > p.price ? money(p.old) : '', stock: String(p.stock), badges: p.badges || 'None',
+      rowBg: s.editing === p.id ? '#F7F7F6' : '#FFFFFF',
+      edit: () => this.setState({ editing: p.id }),
+      del: () => { this.setState((st) => ({ products: st.products.filter((x) => x.id !== p.id), editing: st.editing === p.id ? 0 : st.editing })); this.say('Product deleted'); }
+    }));
+    const editingP = s.products.find((p) => p.id === s.editing);
+    const form = editingP
+      ? { title: 'Edit Product', sub: 'Editing ' + editingP.name + ' (' + editingP.sku + ')', button: 'Update Product' }
+      : { title: 'New Product', sub: 'Fill in the details and publish to the storefront.', button: 'Publish Product' };
+    const badgeToggles = Object.keys(s.badgeOn).map((k) => {
+      const on = s.badgeOn[k];
+      return { label: k, on, bg: on ? '#0A0A0A' : '#FFFFFF', fg: on ? '#FFFFFF' : '#0A0A0A', bd: on ? '#0A0A0A' : '#CFCFCE',
+        toggle: () => this.setState((st) => ({ badgeOn: { ...st.badgeOn, [k]: !st.badgeOn[k] } })) };
+    });
+
+    // inventory
+    const invRows = s.products.map((p) => {
+      const key = p.stock === 0 ? 'Out of Stock' : p.stock <= 15 ? 'Low Stock' : 'In Stock';
+      return { name: p.name, sku: p.sku, cat: p.cat, sizes: p.sizes, stock: String(p.stock), label: key, style: this.pill(key),
+        plus: () => this.adjust(p.id, (n) => n + 10), minus: () => this.adjust(p.id, (n) => n - 5), zero: () => this.adjust(p.id, () => 0) };
+    });
+
+    // orders
+    const statuses = ['Order Received', 'Order Confirmed', 'Processing', 'Packed', 'Shipped', 'Out for Delivery', 'Delivered', 'Cancelled'];
+    const orders = s.orders.map((o) => ({
+      no: o.no, date: o.date, name: o.name, phone: o.phone, area: o.area, city: o.city, method: o.method, pay: o.pay, total: money(o.total),
+      status: o.status, statusStyle: this.pill(o.status), note: s.notes[o.id] || '',
+      setPay: (e) => this.updOrder(o.id, { pay: e.target.value }),
+      setStatus: (e) => { this.updOrder(o.id, { status: e.target.value }); this.say(o.no + ' moved to ' + e.target.value); },
+      setNote: (e) => { const v = e.target.value; this.setState((st) => ({ notes: { ...st.notes, [o.id]: v } })); },
+      saveNote: () => this.say('Delivery note saved for ' + o.no),
+      notify: () => this.say('Dispatch alert for ' + o.no + ' sent to Google Chat')
+    }));
+
+    // customers
+    const customers = [
+      { name: 'Imran Hossain', email: 'imran.h@example.com', phone: '01844-317765', city: 'Khulna', orders: 4, spend: money(18600) },
+      { name: 'Tanvir Ahmed', email: 'tanvir.a@example.com', phone: '01611-537082', city: 'Sylhet', orders: 3, spend: money(14250) },
+      { name: 'Farhana Akter', email: 'farhana.a@example.com', phone: '01712-345601', city: 'Dhaka', orders: 3, spend: money(11880) },
+      { name: 'Nusrat Jahan', email: 'nusrat.j@example.com', phone: '01911-884520', city: 'Dhaka', orders: 2, spend: money(7420) },
+      { name: 'Rafiq Hasan', email: 'rafiq.h@example.com', phone: '01811-220943', city: 'Chattogram', orders: 2, spend: money(6790) },
+      { name: 'Mehedi Hasan', email: 'mehedi.h@example.com', phone: '01511-909313', city: 'Dhaka', orders: 1, spend: money(1960) }
+    ];
+
+    // categories
+    const categories = s.categories.map((c) => ({
+      name: c.name, desc: c.catDraftShown ? '' : (s.catEdit === c.id ? s.catDraft : c.desc),
+      count: s.products.filter((p) => p.cat === c.name).length + '',
+      editing: s.catEdit === c.id, notEditing: s.catEdit !== c.id,
+      edit: () => this.setState({ catEdit: c.id, catDraft: c.desc }),
+      setDesc: (e) => this.setState({ catDraft: e.target.value }),
+      save: () => { this.setState((st) => ({ categories: st.categories.map((x) => x.id === c.id ? { ...x, desc: st.catDraft } : x), catEdit: 0 })); this.say('Description saved'); },
+      cancel: () => this.setState({ catEdit: 0 })
+    }));
+
+    const collections = [
+      { title: 'Winter Capsule', desc: 'Sweaters, hoodies, jackets and shawls for the cold months.', count: 5 },
+      { title: 'Everyday Basics', desc: 'Trousers, beanies and plain tees that go with everything.', count: 3 },
+      { title: 'Eid Edit', desc: 'Panjabi in cotton and linen for festive days.', count: 2 }
+    ].map((c) => ({ ...c, visit: () => this.say('Opening live page for ' + c.title) }));
+
+    const coupons = s.coupons.map((c) => {
+      const st = c.active ? 'Active' : 'Paused';
+      return { code: c.code, status: st, style: this.pill(st), discount: c.type === '%' ? c.value + '% off' : '৳' + c.value + ' off', min: money(c.min),
+        used: c.used + ' / ' + c.limit, pct: Math.min(100, Math.round(c.used / c.limit * 100)) + '%', expiry: c.expiry, toggleLabel: c.active ? 'Pause' : 'Activate',
+        toggle: () => this.setState((x) => ({ coupons: x.coupons.map((k) => k.id === c.id ? { ...k, active: !k.active } : k) })),
+        del: () => { this.setState((x) => ({ coupons: x.coupons.filter((k) => k.id !== c.id) })); this.say(c.code + ' deleted'); } };
+    });
+
+    const rv = [
+      ['Farhana Akter', 'Heavy Fleece Hoodie', 5, 'Warm and the fleece is thick. Fits true to size.'],
+      ['Imran Hossain', 'Cotton Panjabi, Ash', 5, 'Colour matches the photos. Delivered to Khulna in three days.'],
+      ['Nusrat Jahan', 'Merino Crewneck Sweater', 4, 'Soft fabric. The sleeves run slightly long.'],
+      ['Tanvir Ahmed', 'Quilted Bomber Jacket', 4, 'Good stitching. I would have liked one more colour.'],
+      ['Rafiq Hasan', 'Straight Chino Trouser', 3, 'Fit is fine, waist runs a little tight. Size up.'],
+      ['Mehedi Hasan', 'Knit Beanie', 5, 'Exactly what I wanted for the morning commute.']
+    ];
+    const reviews = rv.map((r) => ({ name: r[0], product: r[1], rating: r[2], stars: '★★★★★☆☆☆☆☆'.slice(5 - r[2], 10 - r[2]), text: r[3] }));
+    const reviewAvg = (rv.reduce((a, r) => a + r[2], 0) / rv.length).toFixed(1);
+
+    const settingsFields = [
+      ['Inside Dhaka / Savar charge (৳)', '70'], ['Outside Dhaka charge (৳)', '130'], ['Express surcharge (৳)', '50'], ['Free shipping limit (৳)', '3000'],
+      ['Announcement bar text', 'Free delivery on orders above ৳3,000'], ['Business address', 'Savar, Dhaka 1340'], ['Meta Pixel ID', ''],
+      ['Support email', 'support@yourstore.com'], ['Support phone', '01XXX-XXXXXX'], ['WhatsApp number', '01XXX-XXXXXX'], ['Messenger handle', 'yourstore'],
+      ['Facebook URL', 'https://facebook.com/yourstore'], ['Instagram URL', 'https://instagram.com/yourstore']
+    ].map((f, i) => ({ id: 'st-' + i, label: f[0], value: f[1] }));
+
+    const mails = [
+      ['Sumaiya Rahman', '10:42', 'Size exchange for order #TS-10458'],
+      ['Kamal Uddin', '09:15', 'Where is my parcel?'],
+      ['Laila Banu', 'Yesterday', 'Bulk order enquiry, 20 panjabi'],
+      ['Arif Chowdhury', 'Yesterday', 'Coupon WINTER10 not applying']
+    ];
+    const inbox = mails.map((m, i) => ({ from: m[0], time: m[1], subject: m[2], bg: s.replyId === i + 1 ? '#F1F1F0' : '#FFFFFF',
+      open: () => this.setState({ replyId: i + 1, replyConfirm: false }) }));
+    const rm = mails[s.replyId - 1];
+    const reply = { open: !!rm, to: rm ? rm[0] : '', confirm: s.replyConfirm, notConfirm: !s.replyConfirm };
+
+    const sp = [['Store Team', 8], ['Dispatch Desk', 4], ['Owner Alerts', 2]];
+    const spaces = sp.map((x, i) => {
+      const on = s.spaceId === i + 1;
+      return { name: x[0], members: x[1], bg: on ? '#0A0A0A' : '#FFFFFF', fg: on ? '#FFFFFF' : '#0A0A0A', bd: on ? '#0A0A0A' : '#D4D4D3', pick: () => this.setState({ spaceId: i + 1 }) };
+    });
+
+    const gt = [
+      ['Unlock the panel', 'Enter the password, then sign in with the approved Google account.'],
+      ['Add a product', 'Open Products, fill the form and press Publish Product.'],
+      ['Set a sale price', 'Keep Price lower than Regular Price. The old price shows struck through.'],
+      ['Draft the copy', 'Press Draft Copy to write the description and fit note from the name, category and material.'],
+      ['Mark badges', 'Tick New Arrival, Featured, Best Seller, Trending or Winter Collection.'],
+      ['Adjust stock', 'Use +10, -5 or Set 0 in Inventory. Changes apply at once.'],
+      ['Watch low stock', 'Anything at 15 or fewer appears in Inventory Alerts.'],
+      ['Confirm new orders', 'Move Order Received to Order Confirmed after you check the details.'],
+      ['Update payment', 'Set Paid, Pending, Failed or Refunded on each order.'],
+      ['Move the order along', 'Step through Processing, Packed, Shipped and Out for Delivery. Customers see each step.'],
+      ['Add a delivery note', 'Type the courier or tracking note, then click outside the box to save.'],
+      ['Alert the team', 'Press Notify Chat to post a dispatch message to Google Chat.'],
+      ['Create a coupon', 'Choose percentage or fixed, set a minimum order, limit and expiry date.'],
+      ['Edit categories and collections', 'Update descriptions, or add a collection with a cover image.'],
+      ['Update store settings', 'Change delivery charges, the announcement bar and the Meta Pixel ID.'],
+      ['Sync and back up', 'Press Sync Catalog after changes. Download Backup JSON each week.']
+    ].map((g, i) => ({ n: String(i + 1), title: g[0], text: g[1] }));
+
+    const cl = ['Password changed and stored on the server', 'Approved Google admin account added', 'Firestore rules published', 'Meta Pixel ID checked in Settings', 'First Backup JSON downloaded', 'Owner shown how to read this manual'];
+    const checklist = cl.map((label, i) => { const d = !!s.checks[i]; return { label, done: d, mark: d ? '✓' : '', bg: d ? '#0A0A0A' : '#FFFFFF', fg: '#FFFFFF',
+      toggle: () => this.setState((st) => ({ checks: { ...st.checks, [i]: !st.checks[i] } })) }; });
+
+    return {
+      nav, tab, head: { title: cur[1], sub: cur[2] },
+      cards, revByCat, best, recent, alerts,
+      pulse: { cats: String(s.categories.length), promos: String(activePromos), free: '৳3,000' },
+      goInventory: () => this.setState({ tab: 'inventory' }),
+      products, productCount: s.products.length, form, badgeToggles,
+      draftCopy: () => this.say('Draft written from name, category and material'),
+      publish: () => { this.say(editingP ? 'Product updated' : 'Product published'); this.setState({ editing: 0 }); },
+      invRows, inv: { low: s.products.filter((p) => p.stock > 0 && p.stock <= 15).length, out: s.products.filter((p) => p.stock === 0).length },
+      statuses, orders, customers, categories, collections,
+      addCollection: () => this.say('Collection added'),
+      coupons, createCoupon: () => this.say('Coupon created'),
+      reviews, reviewAvg, settingsFields, saveSettings: () => this.say('Settings saved'),
+      inbox, reply, askConfirm: () => this.setState({ replyConfirm: true }), cancelReply: () => this.setState({ replyConfirm: false }),
+      sendReply: () => { this.setState({ replyConfirm: false, replyId: 0 }); this.say('Reply sent from Gmail'); },
+      syncInbox: () => this.say('Inbox synced'),
+      spaces, loadSpaces: () => this.say('Chat spaces loaded'),
+      chatDraft: s.chatDraft, setChatDraft: (e) => this.setState({ chatDraft: e.target.value }),
+      draftLow: () => this.setState({ chatDraft: 'Low stock: ' + (lowList.map((p) => p.name + ' (' + p.stock + ')').join(', ') || 'none') + '. Please restock.' }),
+      draftDispatch: () => this.setState({ chatDraft: 'Dispatch alert: ' + (s.orders[0] ? s.orders[0].no : '') + ' is ready to ship.' }),
+      postChat: () => { this.say('Message posted to ' + sp[s.spaceId - 1][0]); },
+      guide: gt, checklist,
+      syncCatalog: () => this.say('Catalog synced to Cloud Firestore'),
+      backupJson: () => this.say('Backup JSON prepared'),
+      lockSession: () => this.say('Session locked'),
+      signOut: () => this.say('Signed out of server session and Google'),
+      toast: s.toast
+    };
+  }
+}
+</script>
+</body>
+</html>

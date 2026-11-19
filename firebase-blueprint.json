@@ -1,0 +1,244 @@
+{
+  "entities": {
+    "Product": {
+      "title": "Product",
+      "description": "Men's fashion product listed in the PYTHOX WORLD catalog.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "sku": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "slug": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "shortDescription": { "type": "string", "maxLength": 500 },
+        "description": { "type": "string", "minLength": 1, "maxLength": 5000 },
+        "category": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "subcategory": { "type": "string", "maxLength": 100 },
+        "collection": { "type": "string", "maxLength": 100 },
+        "price": { "type": "number" },
+        "compare_at_price": { "type": "number" },
+        "images": { "type": "array" },
+        "primaryImage": { "type": "string", "maxLength": 2000 },
+        "videoUrl": { "type": "string", "maxLength": 2000 },
+        "colors": { "type": "array" },
+        "sizes": { "type": "array" },
+        "inventory": { "type": "number" },
+        "variantStock": { "type": "object" },
+        "tags": { "type": "array" },
+        "status": {
+          "type": "string",
+          "enum": ["Draft", "Published", "Unpublished", "Out of Stock"]
+        },
+        "rating": { "type": "number" },
+        "reviews_count": { "type": "number" },
+        "featured": { "type": "boolean" },
+        "new_arrival": { "type": "boolean" },
+        "best_seller": { "type": "boolean" },
+        "trending": { "type": "boolean" },
+        "winter_collection": { "type": "boolean" },
+        "sale": { "type": "boolean" },
+        "materials": { "type": "string", "maxLength": 1000 },
+        "size_fit": { "type": "string", "maxLength": 1000 },
+        "care_instructions": { "type": "string", "maxLength": 1000 },
+        "features": { "type": "array" },
+        "created_at": { "type": "string", "maxLength": 64 },
+        "updated_at": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "sku", "name", "slug", "description", "category", "price", "images", "colors", "sizes", "inventory", "status", "created_at"]
+    },
+    "Category": {
+      "title": "Category",
+      "description": "Storefront product category and subcategory taxonomy.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "slug": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "filterCategories": { "type": "array" },
+        "subcategories": { "type": "array" },
+        "image": { "type": "string", "maxLength": 2000 },
+        "description": { "type": "string", "maxLength": 1000 },
+        "display_order": { "type": "number" }
+      },
+      "required": ["id", "name", "slug", "filterCategories", "description", "display_order"]
+    },
+    "Collection": {
+      "title": "Collection",
+      "description": "Curated editorial capsule collection.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 140 },
+        "slug": { "type": "string", "minLength": 1, "maxLength": 140 },
+        "description": { "type": "string", "maxLength": 1000 },
+        "hero_image": { "type": "string", "maxLength": 2000 },
+        "featured": { "type": "boolean" }
+      },
+      "required": ["id", "title", "slug", "description", "hero_image", "featured"]
+    },
+    "Coupon": {
+      "title": "Coupon",
+      "description": "Discount promo code configuration.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "code": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "discountType": { "type": "string", "enum": ["percentage", "fixed"] },
+        "value": { "type": "number" },
+        "minOrder": { "type": "number" },
+        "expiryDate": { "type": "string", "maxLength": 40 },
+        "usageLimit": { "type": "number" },
+        "active": { "type": "boolean" },
+        "usageCount": { "type": "number" }
+      },
+      "required": ["id", "code", "discountType", "value", "minOrder", "active", "usageCount"]
+    },
+    "Review": {
+      "title": "Review",
+      "description": "Public customer product review without PII.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "productId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "productName": { "type": "string", "maxLength": 200 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "authorName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "rating": { "type": "number" },
+        "comment": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "createdAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "productId", "authorName", "rating", "comment", "createdAt"]
+    },
+    "Order": {
+      "title": "Order",
+      "description": "Customer order containing protected PII and line items.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "orderNumber": { "type": "string", "minLength": 3, "maxLength": 40 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "isGuest": { "type": "boolean" },
+        "customerName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "customerEmail": { "type": "string", "maxLength": 200 },
+        "customerPhone": { "type": "string", "minLength": 6, "maxLength": 25 },
+        "address": { "type": "string", "minLength": 3, "maxLength": 300 },
+        "city": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "area": { "type": "string", "maxLength": 80 },
+        "postalCode": { "type": "string", "maxLength": 20 },
+        "deliveryMethod": { "type": "string", "enum": ["Standard Delivery", "Express Delivery"] },
+        "paymentMethod": { "type": "string", "enum": ["Cash on Delivery", "bKash", "Nagad"] },
+        "paymentStatus": { "type": "string", "enum": ["Pending", "Paid", "Failed", "Refunded"] },
+        "deliveryStatus": { "type": "string", "maxLength": 200 },
+        "deliveryNote": { "type": "string", "maxLength": 500 },
+        "paymentReference": { "type": "string", "maxLength": 120 },
+        "paymentSenderNumber": { "type": "string", "maxLength": 30 },
+        "items": { "type": "array" },
+        "subtotal": { "type": "number" },
+        "shipping": { "type": "number" },
+        "discount": { "type": "number" },
+        "couponCode": { "type": "string", "maxLength": 40 },
+        "total": { "type": "number" },
+        "status": {
+          "type": "string",
+          "enum": ["Order Received", "Order Confirmed", "Processing", "Packed", "Shipped", "Out for Delivery", "Delivered", "Cancelled"]
+        },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "orderNumber", "customerName", "customerPhone", "address", "city", "deliveryMethod", "paymentMethod", "paymentStatus", "deliveryStatus", "items", "subtotal", "shipping", "discount", "total", "status", "createdAt"]
+    },
+    "OrderTracking": {
+      "title": "OrderTracking",
+      "description": "Split non-PII tracking status record keyed by orderNumber and phone digits.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "orderId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "orderNumber": { "type": "string", "minLength": 3, "maxLength": 40 },
+        "status": {
+          "type": "string",
+          "enum": ["Order Received", "Order Confirmed", "Processing", "Packed", "Shipped", "Out for Delivery", "Delivered", "Cancelled"]
+        },
+        "paymentStatus": { "type": "string", "enum": ["Pending", "Paid", "Failed", "Refunded"] },
+        "deliveryStatus": { "type": "string", "maxLength": 200 },
+        "deliveryMethod": { "type": "string", "enum": ["Standard Delivery", "Express Delivery"] },
+        "city": { "type": "string", "maxLength": 80 },
+        "total": { "type": "number" },
+        "itemCount": { "type": "number" },
+        "createdAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "orderId", "orderNumber", "status", "paymentStatus", "deliveryStatus", "deliveryMethod", "total", "itemCount", "createdAt"]
+    },
+    "StoreSettings": {
+      "title": "StoreSettings",
+      "description": "Global storefront configuration, shipping charges, social URLs, and hero banner.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "insideDhakaCharge": { "type": "number" },
+        "outsideDhakaCharge": { "type": "number" },
+        "expressSurcharge": { "type": "number" },
+        "freeShippingThreshold": { "type": "number" },
+        "businessAddress": { "type": "string", "maxLength": 300 },
+        "supportEmail": { "type": "string", "maxLength": 200 },
+        "supportPhone": { "type": "string", "maxLength": 40 },
+        "whatsappNumber": { "type": "string", "maxLength": 40 },
+        "messengerHandle": { "type": "string", "maxLength": 80 },
+        "facebookUrl": { "type": "string", "maxLength": 500 },
+        "instagramUrl": { "type": "string", "maxLength": 500 },
+        "metaPixelId": { "type": "string", "maxLength": 40 },
+        "announcementText": { "type": "string", "maxLength": 300 },
+        "heroImageUrl": { "type": "string", "maxLength": 2000 }
+      },
+      "required": ["id", "insideDhakaCharge", "outsideDhakaCharge", "expressSurcharge", "freeShippingThreshold"]
+    },
+    "AdminUser": {
+      "title": "AdminUser",
+      "description": "Authorized store administrator document.",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string", "maxLength": 200 },
+        "role": { "type": "string", "enum": ["admin"] },
+        "createdAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["email", "role"]
+    }
+  },
+  "firestore": {
+    "/products/{productId}": {
+      "schema": { "$ref": "#/entities/Product" },
+      "description": "Storefront products; public reads only for status == 'Published', full access for admins."
+    },
+    "/categories/{categoryId}": {
+      "schema": { "$ref": "#/entities/Category" },
+      "description": "Public categories managed by admin."
+    },
+    "/collections/{collectionId}": {
+      "schema": { "$ref": "#/entities/Collection" },
+      "description": "Public editorial capsule collections managed by admin."
+    },
+    "/coupons/{couponId}": {
+      "schema": { "$ref": "#/entities/Coupon" },
+      "description": "Promo codes readable at checkout and managed by admin."
+    },
+    "/reviews/{reviewId}": {
+      "schema": { "$ref": "#/entities/Review" },
+      "description": "Public product reviews."
+    },
+    "/orders/{orderId}": {
+      "schema": { "$ref": "#/entities/Order" },
+      "description": "PII-protected customer orders; creatable at checkout, readable/updatable by admin or authenticated owner."
+    },
+    "/order_tracking/{trackingId}": {
+      "schema": { "$ref": "#/entities/OrderTracking" },
+      "description": "Non-PII order status lookup accessible only by exact document get (no list)."
+    },
+    "/settings/{settingId}": {
+      "schema": { "$ref": "#/entities/StoreSettings" },
+      "description": "Storefront settings including hero banner URL and shipping configuration."
+    },
+    "/admins/{userId}": {
+      "schema": { "$ref": "#/entities/AdminUser" },
+      "description": "Admin role directory."
+    }
+  }
+}

@@ -57,7 +57,14 @@ rm -f \
   "$DEPLOYPATH/server.ts" \
   "$DEPLOYPATH/metadata.json" \
   "$DEPLOYPATH/.cpanel.yml" \
-  "$DEPLOYPATH/.env.example"
+  "$DEPLOYPATH/.env.example" \
+  "$DEPLOYPATH/firebase-applet-config.json" \
+  "$DEPLOYPATH/firebase-blueprint.json" \
+  "$DEPLOYPATH/firestore.rules" \
+  "$DEPLOYPATH/firestore.rules.test.ts" \
+  "$DEPLOYPATH/storage.rules" \
+  "$DEPLOYPATH/eslint.config.js" \
+  "$DEPLOYPATH/security_spec.md"
 
 echo "[cpanel-deploy] Copying built dist/ files (including .htaccess) to $DEPLOYPATH..."
 cp -rf dist/. "$DEPLOYPATH/"

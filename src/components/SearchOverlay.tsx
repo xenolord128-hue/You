@@ -97,7 +97,8 @@ export const SearchOverlay: React.FC = () => {
           })),
         }),
       });
-      if (res.ok) {
+      const ct = res.headers.get('content-type') || '';
+      if (res.ok && ct.toLowerCase().includes('application/json')) {
         const data = await res.json();
         if (Array.isArray(data.matchedIds)) setSmartIds(data.matchedIds);
         if (data.curationNote) setSmartNote(data.curationNote);

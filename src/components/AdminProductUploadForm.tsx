@@ -22,6 +22,7 @@ import {
   ProductColor,
   ProductStatus,
 } from '../types/ecommerce';
+import { uploadMediaToFirebase } from '../services/mediaService';
 
 const FALLBACK_CATEGORIES: ProductCategory[] = [
   'T-Shirt',
@@ -111,7 +112,6 @@ const PRODUCT_STATUS_OPTIONS: { value: ProductStatus; label: string; hint: strin
 interface AdminProductUploadFormProps {
   categories: Category[];
   collections: Collection[];
-  adminSessionToken: string;
   editingProduct: Product | null;
   onCancelEdit: () => void;
   upsertProduct: (product: Product, isNew?: boolean) => Promise<Product>;
@@ -124,59 +124,17 @@ function formatBytes(bytes?: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function uploadMediaWithProgress(
-  file: File,
-  kind: 'image' | 'video',
-  adminSessionToken: string,
-  onProgress: (pct: number) => void
-): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    const endpoint = `/api/admin/upload-media?kind=${encodeURIComponent(
-      kind
-    )}&filename=${encodeURIComponent(file.name)}`;
-
-    xhr.open('POST', endpoint, true);
-    xhr.withCredentials = true;
-    if (adminSessionToken) {
-      xhr.setRequestHeader('x-admin-session', adminSessionToken);
-    }
-    xhr.setRequestHeader(
-      'Content-Type',
-      file.type || (kind === 'image' ? 'image/jpeg' : 'video/mp4')
-    );
-
-    xhr.upload.onprogress = (evt) => {
-      if (evt.lengthComputable && evt.total > 0) {
-        onProgress(Math.min(99, Math.round((evt.loaded / evt.total) * 100)));
-      }
-    };
-
-    xhr.onload = () => {
-      let data: { url?: string; error?: string } = {};
-      try {
-        data = JSON.parse(xhr.responseText || '{}');
-      } catch {
-        data = {};
-      }
-      if (xhr.status >= 200 && xhr.status < 300 && data.url) {
-        onProgress(100);
-        resolve(data.url);
-      } else {
-        reject(new Error(data.error || `Failed to upload ${kind} (${xhr.status}).`));
-      }
-    };
-
-    xhr.onerror = () => {
-      reject(new Error(`Network error while uploading ${file.name}.`));
-    };
-
-    xhr.onabort = () => {
-      reject(new Error(`Upload cancelled for ${file.name}.`));
-    };
-
-    xhr.send(file);
-  });
+function buildLocalEditorialCopy(
+  productName: string,
+  category: string,
+  materials: string
+): { description: string; sizeFit: string } {
+  const fabric = materials.trim() || 'heavyweight combed ring-spun cotton';
+  const catLabel = category.trim().toLowerCase() || 'menswear essential';
+  return {
+    description: `Engineered for modern daily rotation, the ${productName} refines the classic ${catLabel} silhouette with clean architectural proportions. Cut from ${fabric}, it delivers structured drape, breathable comfort, and reinforced seam construction built to hold its shape wear after wear.`,
+    sizeFit: 'Tailored modern cut. Take your true size for a clean silhouette, or size up for a relaxed boxy drape.',
+  };
 }
 
 function buildInitialSku(): string {
@@ -186,7 +144,6 @@ function buildInitialSku(): string {
 export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
   categories,
   collections,
-  adminSessionToken,
   editingProduct,
   onCancelEdit,
   upsertProduct,
@@ -657,19 +614,27 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
         credentials: 'include',
         headers: {
           'Content-Type': 'application/json',
-          ...(adminSessionToken ? { 'x-admin-session': adminSessionToken } : {}),
         },
         body: JSON.stringify({ name: name.trim(), category, materials }),
       });
-      const data = (await res.json()) as { description?: string; sizeFit?: string };
-      if (data.description) {
-        setDescription(data.description);
-        setErrors((prev) => ({ ...prev, description: undefined }));
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const data = (await res.json()) as { description?: string; sizeFit?: string };
+        if (data.description) {
+          setDescription(data.description);
+          setErrors((prev) => ({ ...prev, description: undefined }));
+        }
+        if (data.sizeFit) setSizeFit(data.sizeFit);
+        showToast('Draft written from name, category and material');
+        return;
       }
-      if (data.sizeFit) setSizeFit(data.sizeFit);
-      showToast('Draft written from name, category and material');
+      throw new Error('Fallback to local draft');
     } catch {
-      showToast('Unable to generate copy right now.');
+      const localDraft = buildLocalEditorialCopy(name.trim(), category, materials);
+      setDescription(localDraft.description);
+      setSizeFit(localDraft.sizeFit);
+      setErrors((prev) => ({ ...prev, description: undefined }));
+      showToast('Editorial draft written from name, category and material');
     } finally {
       setIsGeneratingCopy(false);
     }
@@ -771,10 +736,9 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
         );
 
         try {
-          const uploadedUrl = await uploadMediaWithProgress(
+          const uploadedUrl = await uploadMediaToFirebase(
             item.file,
-            'image',
-            adminSessionToken,
+            'products/images',
             (pct) => {
               setImages((prev) =>
                 prev.map((img) =>
@@ -825,10 +789,9 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
         );
 
         try {
-          const uploadedVideoUrl = await uploadMediaWithProgress(
+          const uploadedVideoUrl = await uploadMediaToFirebase(
             videoFile,
-            'video',
-            adminSessionToken,
+            'products/videos',
             (pct) => {
               setVideo((prev) => (prev ? { ...prev, progress: pct } : prev));
               const overall = Math.round(
@@ -1679,7 +1642,7 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
                       {video.name}
                     </span>
                     <span className="admin-sub">
-                      {video.sizeBytes ? formatBytes(video.sizeBytes) : 'Ready on server'} ·{' '}
+                      {video.sizeBytes ? formatBytes(video.sizeBytes) : 'Saved in Firebase Storage'} ·{' '}
                       {video.status === 'uploaded'
                         ? 'Uploaded'
                         : video.status === 'uploading'

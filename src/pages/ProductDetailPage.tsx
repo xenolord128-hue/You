@@ -219,8 +219,13 @@ export const ProductDetailPage: React.FC = () => {
           question: fitQuestion,
         }),
       });
-      const data = await res.json();
-      setFitAnswer(data.answer || 'True to size with a clean contemporary drape.');
+      const ct = res.headers.get('content-type') || '';
+      if (res.ok && ct.toLowerCase().includes('application/json')) {
+        const data = await res.json();
+        setFitAnswer(data.answer || 'True to size with a clean contemporary drape.');
+      } else {
+        setFitAnswer('Select your regular size for a tailored silhouette.');
+      }
     } catch {
       setFitAnswer('Select your regular size for a tailored silhouette.');
     } finally {

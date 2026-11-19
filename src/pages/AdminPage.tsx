@@ -3,13 +3,12 @@ import { Link } from 'react-router-dom';
 import {
   ArrowLeft,
   Copy,
-  Eye,
-  EyeOff,
   Image as ImageIcon,
   Lock,
   Plus,
   RotateCcw,
   Search,
+  ShieldCheck,
   Trash2,
   Upload,
   X,
@@ -25,6 +24,8 @@ import {
   ProductStatus,
 } from '../types/ecommerce';
 import { formatBDT, sanitizeExternalHref, sanitizeMediaUrl, sanitizePixelId } from '../lib/formatters';
+import { ADMIN_EMAIL } from '../lib/firebase';
+import { uploadMediaToFirebase } from '../services/mediaService';
 import { BRAND_LOCATION, EDITORIAL_MEDIA } from '../config/storeConfig';
 import { SeoHead } from '../components/SeoHead';
 import { AdminProductUploadForm } from '../components/AdminProductUploadForm';
@@ -118,7 +119,7 @@ const REVENUE_SHADES = ['#0A0A0A', '#2E2E2E', '#4A4A4A', '#7A7A79', '#A3A3A2', '
 const GUIDE_ITEMS: { title: string; text: string }[] = [
   {
     title: 'Unlock the panel',
-    text: 'Visit /admin and enter your administrator password to unlock the console.',
+    text: 'Visit /admin and sign in with the authorized administrator Google account to unlock the console.',
   },
   {
     title: 'Add a product',
@@ -183,9 +184,9 @@ const GUIDE_ITEMS: { title: string; text: string }[] = [
 ];
 
 const HANDOVER_CHECKLIST: string[] = [
-  'ADMIN_PASSWORD set in hosting environment variables',
-  'ADMIN_SESSION_SECRET configured on server',
-  'Self-hosted store persistence verified',
+  'Firebase Firestore database & security rules deployed',
+  'Firebase Storage enabled with storage.rules published',
+  'Authorized cPanel domain added in Firebase Authentication',
   'Meta Pixel ID checked in Settings',
   'First Backup JSON downloaded',
   'Owner shown how to read this manual',
@@ -223,9 +224,11 @@ function getPillStyle(status: string): React.CSSProperties {
 export const AdminPage: React.FC = () => {
   const {
     serverConnected,
-    adminSessionToken,
-    setAdminSessionToken,
-    refreshAdminData,
+    authReady,
+    isAdminAuthenticated,
+    adminUserEmail,
+    signInAdmin,
+    signOutAdminUser,
     adminProducts,
     categories,
     collections,
@@ -247,10 +250,6 @@ export const AdminPage: React.FC = () => {
     showToast,
   } = useStore();
 
-  const [checkingSession, setCheckingSession] = useState(true);
-  const [passwordVerified, setPasswordVerified] = useState(false);
-  const [passwordInput, setPasswordInput] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
   const [loginError, setLoginError] = useState('');
   const [loggingIn, setLoggingIn] = useState(false);
 
@@ -361,67 +360,17 @@ export const AdminPage: React.FC = () => {
     });
   };
 
-  useEffect(() => {
-    let active = true;
-    (async () => {
-      try {
-        const res = await fetch('/api/admin/session', {
-          credentials: 'include',
-          headers: adminSessionToken ? { 'x-admin-session': adminSessionToken } : undefined,
-        });
-        if (res.ok && active) {
-          const data = (await res.json()) as { authenticated?: boolean; sessionToken?: string };
-          const ok = Boolean(data.authenticated);
-          setPasswordVerified(ok);
-          if (ok) {
-            const effectiveToken = data.sessionToken || adminSessionToken || undefined;
-            if (data.sessionToken && data.sessionToken !== adminSessionToken) {
-              setAdminSessionToken(data.sessionToken);
-            }
-            void refreshAdminData(effectiveToken);
-          }
-        }
-      } catch {
-        if (active) setPasswordVerified(false);
-      } finally {
-        if (active) setCheckingSession(false);
-      }
-    })();
-    return () => {
-      active = false;
-    };
-  }, [adminSessionToken, refreshAdminData]);
-
-  const handlePasswordSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!passwordInput) {
-      setLoginError('Please enter the administrator password.');
-      return;
-    }
+  const handleGoogleAdminSignIn = async () => {
     setLoggingIn(true);
     setLoginError('');
     try {
-      const res = await fetch('/api/admin/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ password: passwordInput }),
-      });
-      const data = (await res.json()) as {
-        authenticated?: boolean;
-        sessionToken?: string;
-        error?: string;
-      };
-      if (res.ok && data.authenticated) {
-        setPasswordVerified(true);
-        if (data.sessionToken) setAdminSessionToken(data.sessionToken);
-        void refreshAdminData(data.sessionToken);
-        setPasswordInput('');
-      } else {
-        setLoginError(data.error || 'Incorrect administrator password.');
-      }
-    } catch {
-      setLoginError('Unable to verify password right now. Please try again.');
+      await signInAdmin();
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error
+          ? err.message
+          : `Unable to sign in. Use the authorized Google account (${ADMIN_EMAIL}).`;
+      setLoginError(message);
     } finally {
       setLoggingIn(false);
     }
@@ -429,16 +378,10 @@ export const AdminPage: React.FC = () => {
 
   const handleLockSession = async () => {
     try {
-      await fetch('/api/admin/logout', {
-        method: 'POST',
-        credentials: 'include',
-        headers: adminSessionToken ? { 'x-admin-session': adminSessionToken } : undefined,
-      });
+      await signOutAdminUser();
     } catch {
-      // Ignore network error
+      showToast('Unable to sign out right now.');
     }
-    setAdminSessionToken('');
-    setPasswordVerified(false);
   };
 
   const analytics = useMemo(() => {
@@ -572,20 +515,20 @@ export const AdminPage: React.FC = () => {
   }, [adminProducts, prodSearch, prodStatusFilter, prodCategoryFilter, categories]);
 
   // 1) Loading state
-  if (checkingSession) {
+  if (!authReady) {
     return (
       <div className="admin-console justify-center items-center p-4 sm:p-6">
         <SeoHead title="Restricted Access — PYTHOX WORLD" description="Protected Portal" />
         <div className="admin-card w-full max-w-sm p-8 text-center space-y-3 modal-enter">
           <div className="mx-auto h-9 w-9 rounded-full border-2 border-[#D4D4D3] border-t-[#0A0A0A] animate-spin" />
-          <p className="admin-lbl">Verifying Session</p>
+          <p className="admin-lbl">Verifying Firebase Session</p>
         </div>
       </div>
     );
   }
 
-  // 2) Admin Panel Password Gate (server-verified password only)
-  if (!passwordVerified) {
+  // 2) Admin Panel Google Auth Gate
+  if (!isAdminAuthenticated) {
     return (
       <div className="admin-console justify-center items-center p-4 sm:p-6">
         <SeoHead title="Admin Login — PYTHOX WORLD" description="Protected Portal" />
@@ -610,58 +553,38 @@ export const AdminPage: React.FC = () => {
             </span>
           </div>
 
-          <div className="space-y-1.5">
+          <div className="space-y-2">
             <h1 className="text-2xl text-[#0A0A0A]">Administrator Access</h1>
             <p className="text-[13px] text-[#6A6A6A] leading-relaxed">
-              Enter your administrator password to unlock the console.
+              Sign in with the verified Google administrator account to manage Firestore products, orders, and Firebase Storage media uploads.
             </p>
           </div>
 
-          <form onSubmit={(e) => void handlePasswordSubmit(e)} className="space-y-4">
-            <div className="admin-fld">
-              <label htmlFor="admin-password-input" className="admin-lbl">
-                Password
-              </label>
-              <div className="relative">
-                <input
-                  id="admin-password-input"
-                  type={showPassword ? 'text' : 'password'}
-                  autoComplete="current-password"
-                  autoFocus
-                  value={passwordInput}
-                  onChange={(e) => setPasswordInput(e.target.value)}
-                  placeholder="Enter password"
-                  className="admin-inp pr-11 h-11"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword((prev) => !prev)}
-                  aria-label={showPassword ? 'Hide password' : 'Show password'}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 h-8 w-8 rounded-lg flex items-center justify-center text-[#6A6A6A] hover:text-[#0A0A0A] cursor-pointer"
-                >
-                  {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                </button>
-              </div>
+          <div className="rounded-[10px] border border-[#E2E2E1] bg-[#F7F7F6] px-3.5 py-3 flex items-start gap-2.5">
+            <ShieldCheck className="h-4 w-4 text-[#0A0A0A] shrink-0 mt-0.5" />
+            <div className="text-[12px] text-[#4A4A4A] leading-snug">
+              Authorized account: <span className="font-semibold text-[#0A0A0A]">{ADMIN_EMAIL}</span>
             </div>
+          </div>
 
-            {loginError && (
-              <p
-                role="alert"
-                aria-live="polite"
-                className="rounded-[9px] border border-[#0A0A0A] bg-[#F1F1F0] px-3.5 py-2.5 text-xs font-medium text-[#0A0A0A]"
-              >
-                {loginError}
-              </p>
-            )}
-
-            <button
-              type="submit"
-              disabled={loggingIn}
-              className="admin-btn admin-btn-dark w-full h-11 font-semibold"
+          {loginError && (
+            <p
+              role="alert"
+              aria-live="polite"
+              className="rounded-[9px] border border-[#0A0A0A] bg-[#F1F1F0] px-3.5 py-2.5 text-xs font-medium text-[#0A0A0A]"
             >
-              {loggingIn ? 'Verifying...' : 'Unlock Console'}
-            </button>
-          </form>
+              {loginError}
+            </p>
+          )}
+
+          <button
+            type="button"
+            disabled={loggingIn}
+            onClick={() => void handleGoogleAdminSignIn()}
+            className="admin-btn admin-btn-dark w-full h-11 font-semibold inline-flex items-center justify-center gap-2.5"
+          >
+            {loggingIn ? 'Signing in...' : 'Sign in with Google'}
+          </button>
 
           <div className="pt-3 border-t border-[#ECECEB] flex items-center justify-between">
             <Link
@@ -754,24 +677,9 @@ export const AdminPage: React.FC = () => {
     if (!file) return;
     setCatUploadingImg(true);
     try {
-      const res = await fetch(
-        `/api/admin/upload-media?kind=image&filename=${encodeURIComponent(file.name)}`,
-        {
-          method: 'POST',
-          credentials: 'include',
-          headers: {
-            'Content-Type': file.type || 'image/jpeg',
-            ...(adminSessionToken ? { 'x-admin-session': adminSessionToken } : {}),
-          },
-          body: file,
-        }
-      );
-      const data = (await res.json()) as { url?: string; error?: string };
-      if (!res.ok || !data.url) {
-        throw new Error(data.error || 'Image upload failed');
-      }
-      setCatImageInput(data.url);
-      showToast('Category cover image uploaded');
+      const url = await uploadMediaToFirebase(file, 'categories');
+      setCatImageInput(url);
+      showToast('Category cover image uploaded to Firebase Storage');
     } catch (err: unknown) {
       showToast(err instanceof Error ? err.message : 'Unable to upload cover image.');
     } finally {
@@ -886,25 +794,10 @@ export const AdminPage: React.FC = () => {
     }
     setHeroUploading(true);
     try {
-      const res = await fetch(
-        `/api/admin/upload-media?kind=image&filename=${encodeURIComponent(file.name)}`,
-        {
-          method: 'POST',
-          credentials: 'include',
-          headers: {
-            'Content-Type': file.type || 'image/jpeg',
-            ...(adminSessionToken ? { 'x-admin-session': adminSessionToken } : {}),
-          },
-          body: file,
-        }
-      );
-      const data = (await res.json()) as { url?: string; error?: string };
-      if (!res.ok || !data.url) {
-        throw new Error(data.error || 'Hero banner upload failed.');
-      }
-      setHeroImageUrl(data.url);
-      await updateStoreSettings({ heroImageUrl: data.url });
-      showToast('Homepage hero image updated & live');
+      const url = await uploadMediaToFirebase(file, 'hero');
+      setHeroImageUrl(url);
+      await updateStoreSettings({ heroImageUrl: url });
+      showToast('Homepage hero image uploaded & live');
     } catch (err: unknown) {
       showToast(err instanceof Error ? err.message : 'Unable to upload hero image.');
     } finally {
@@ -1075,10 +968,10 @@ export const AdminPage: React.FC = () => {
         <div className="mt-auto flex flex-col gap-2 pt-5 border-t border-[#262626]">
           <div className="px-1.5 pb-1.5 flex flex-col gap-[3px]">
             <span className="text-[11px] text-[#9A9A9A] tracking-[0.08em] uppercase">
-              Session
+              Firebase Session
             </span>
-            <span className="text-[12px] text-[#D4D4D3]">
-              Unlocked · {serverConnected ? 'Server Connected' : 'Local Ready'}
+            <span className="text-[12px] text-[#D4D4D3] truncate">
+              {adminUserEmail || 'Authorized Admin'} · {serverConnected ? 'Firebase Live' : 'Connecting'}
             </span>
             <Link
               to="/"
@@ -1106,7 +999,7 @@ export const AdminPage: React.FC = () => {
               <rect x="4" y="11" width="16" height="10" rx="2" />
               <path d="M8 11V7a4 4 0 0 1 8 0v4" />
             </svg>
-            Lock Session
+            Sign Out
           </button>
         </div>
       </aside>
@@ -1121,7 +1014,7 @@ export const AdminPage: React.FC = () => {
           </div>
           <div className="flex flex-wrap gap-2.5 items-center">
             <span className="admin-pill bg-white border border-[#D4D4D3] text-[#6A6A6A]">
-              {serverConnected ? 'Server Connected' : 'Local Ready'}
+              {serverConnected ? 'Firebase Connected' : 'Offline Mode'}
             </span>
             <button
               type="button"
@@ -1397,7 +1290,6 @@ export const AdminPage: React.FC = () => {
               <AdminProductUploadForm
                 categories={categories}
                 collections={collections}
-                adminSessionToken={adminSessionToken}
                 editingProduct={editingProductObj || null}
                 onCancelEdit={() => setEditingProductId(null)}
                 upsertProduct={upsertProduct}

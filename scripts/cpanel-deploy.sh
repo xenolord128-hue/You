@@ -2,71 +2,76 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DEPLOYPATH="${1:-/home/pythoxwo/public_html}"
 
-if [ -n "${1:-}" ]; then
-  DEPLOYPATH="$1"
-elif [ -n "${HOME:-}" ] && [ -d "${HOME}" ]; then
-  DEPLOYPATH="${HOME}/public_html"
-else
-  DEPLOYPATH="/home/pythoxwo/public_html"
-fi
+# Include common cPanel / CloudLinux Node.js binary paths if npm is not in default PATH
+for node_bin in \
+  /usr/local/bin \
+  /opt/cpanel/ea-nodejs22/bin \
+  /opt/cpanel/ea-nodejs20/bin \
+  /opt/alt/alt-nodejs22/root/usr/bin \
+  /opt/alt/alt-nodejs20/root/usr/bin; do
+  if [ -d "$node_bin" ] && [[ ":$PATH:" != *":$node_bin:"* ]]; then
+    PATH="$node_bin:$PATH"
+  fi
+done
+export PATH
 
 cd "$REPO_ROOT"
-echo "[cpanel-deploy] Repository root: $REPO_ROOT"
-echo "[cpanel-deploy] Target document root: $DEPLOYPATH"
 
-# Use pre-built dist/ directly by default so shared cPanel hosts never hang on npm install / vite build.
-# To force a server-side rebuild manually, run with CPANEL_FORCE_BUILD=1.
-if [ "${CPANEL_FORCE_BUILD:-0}" = "1" ] || [ ! -f "dist/index.html" ] || [ ! -d "dist/assets" ]; then
-  if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
-    NODE_VER="$(node -v)"
-    NODE_MAJOR="$(printf '%s' "$NODE_VER" | sed -E 's/^v([0-9]+).*/\1/')"
-    if [ "${NODE_MAJOR:-0}" -ge 20 ]; then
-      echo "[cpanel-deploy] Building dist/ with Node.js $NODE_VER..."
-      export NODE_ENV=development
-      if [ -f "package-lock.json" ]; then
-        npm ci --include=dev --no-audit --no-fund || npm install --include=dev --no-audit --no-fund
-      else
-        npm install --include=dev --no-audit --no-fund
-      fi
-      export NODE_ENV=production
-      npm run build
-    fi
-  fi
-fi
-
-if [ ! -f "dist/index.html" ] || [ ! -d "dist/assets" ]; then
-  echo "[cpanel-deploy] ERROR: dist/index.html or dist/assets is missing. Aborting deployment." >&2
+if [ "$DEPLOYPATH" = "$REPO_ROOT" ]; then
+  echo "[cpanel-deploy] ERROR: Deployment target matches repository root ($REPO_ROOT). Aborting." >&2
   exit 1
 fi
 
+if [ ! -f "package-lock.json" ]; then
+  echo "[cpanel-deploy] ERROR: package-lock.json not found in $REPO_ROOT. Aborting deployment." >&2
+  exit 1
+fi
+
+if ! command -v npm >/dev/null 2>&1; then
+  echo "[cpanel-deploy] ERROR: npm command not found in PATH. Ensure Node.js is installed on the server." >&2
+  exit 1
+fi
+
+echo "[cpanel-deploy] Repository root: $REPO_ROOT"
+echo "[cpanel-deploy] Installing dependencies..."
+if ! npm ci --include=dev --no-audit --no-fund; then
+  echo "[cpanel-deploy] ERROR: npm ci failed. Aborting deployment." >&2
+  exit 1
+fi
+
+echo "[cpanel-deploy] Building production bundle..."
+export NODE_ENV=production
+if ! npm run build; then
+  echo "[cpanel-deploy] ERROR: Production build failed. Aborting deployment." >&2
+  exit 1
+fi
+
+if [ ! -f "dist/index.html" ]; then
+  echo "[cpanel-deploy] ERROR: Build completed but dist/index.html does not exist. Aborting deployment." >&2
+  exit 1
+fi
+
+echo "[cpanel-deploy] Build successful."
+echo "[cpanel-deploy] Deploying to $DEPLOYPATH..."
+
 mkdir -p "$DEPLOYPATH"
 
-echo "[cpanel-deploy] Safely cleaning old website files in $DEPLOYPATH..."
+# Safely clean previous deployed website files from public_html (without touching .well-known, cgi-bin, or repo files)
 rm -rf "$DEPLOYPATH/assets"
-rm -f "$DEPLOYPATH/index.html" "$DEPLOYPATH/robots.txt" "$DEPLOYPATH/sitemap.xml" "$DEPLOYPATH/.htaccess"
-
-# Remove raw source files if an earlier deploy pushed repo root into public_html
-rm -rf "$DEPLOYPATH/src" "$DEPLOYPATH/public" "$DEPLOYPATH/scripts"
 rm -f \
-  "$DEPLOYPATH/package.json" \
-  "$DEPLOYPATH/package-lock.json" \
-  "$DEPLOYPATH/bun.lock" \
-  "$DEPLOYPATH/vite.config.ts" \
-  "$DEPLOYPATH/tsconfig.json" \
-  "$DEPLOYPATH/server.ts" \
-  "$DEPLOYPATH/metadata.json" \
-  "$DEPLOYPATH/.cpanel.yml" \
-  "$DEPLOYPATH/.env.example" \
-  "$DEPLOYPATH/firebase-applet-config.json" \
-  "$DEPLOYPATH/firebase-blueprint.json" \
-  "$DEPLOYPATH/firestore.rules" \
-  "$DEPLOYPATH/firestore.rules.test.ts" \
-  "$DEPLOYPATH/storage.rules" \
-  "$DEPLOYPATH/eslint.config.js" \
-  "$DEPLOYPATH/security_spec.md"
+  "$DEPLOYPATH/index.html" \
+  "$DEPLOYPATH/robots.txt" \
+  "$DEPLOYPATH/sitemap.xml" \
+  "$DEPLOYPATH/.htaccess"
 
-echo "[cpanel-deploy] Copying built dist/ files (including .htaccess) to $DEPLOYPATH..."
+# Copy contents of dist/ (including hidden files like .htaccess) into public_html
 cp -rf dist/. "$DEPLOYPATH/"
 
-echo "[cpanel-deploy] Deployment complete in <1s: $DEPLOYPATH/index.html"
+if [ ! -f "$DEPLOYPATH/index.html" ]; then
+  echo "[cpanel-deploy] ERROR: Failed to copy dist/index.html to $DEPLOYPATH." >&2
+  exit 1
+fi
+
+echo "[cpanel-deploy] Deployment complete."

@@ -15,8 +15,15 @@ import { useStore } from '../context/StoreContext';
 import { SeoHead } from '../components/SeoHead';
 import { BrandLogo } from '../components/BrandLogo';
 import { Reveal } from '../components/Motion';
-import { EDITORIAL_MEDIA } from '../config/storeConfig';
+import {
+  EDITORIAL_MEDIA,
+  HERO_CAMPAIGN_FALLBACK_URL,
+  HERO_CAMPAIGN_URL,
+  MOBILE_HERO_CAMPAIGN_FALLBACK_URL,
+  MOBILE_HERO_CAMPAIGN_URL,
+} from '../config/storeConfig';
 import { formatBDT, sanitizeExternalHref, sanitizeMediaUrl } from '../lib/formatters';
+import { trackPixelEvent } from '../lib/metaPixel';
 
 interface EditorialCategoryTile {
   id: string;
@@ -32,23 +39,23 @@ const CATEGORY_TILES: EditorialCategoryTile[] = [
     id: 'tile-tshirts',
     title: 'T-SHIRTS & POLOS',
     cta: 'Shop Now',
-    to: '/shop?category=T-Shirt',
+    to: '/category/t-shirts-polo-shirts',
     image: EDITORIAL_MEDIA.prodKnitPolo,
     objectPos: 'object-center',
   },
   {
-    id: 'tile-collections',
-    title: 'COLLECTIONS',
+    id: 'tile-hoodies',
+    title: 'HOODIES & JACKETS',
     cta: 'Shop Now',
-    to: '/winter-collection',
-    image: EDITORIAL_MEDIA.catShoes,
+    to: '/category/hoodies-jackets',
+    image: EDITORIAL_MEDIA.prodHoodieCharcoal,
     objectPos: 'object-center',
   },
   {
-    id: 'tile-accessories',
-    title: 'ACCESSORIES',
+    id: 'tile-watches',
+    title: 'WATCHES & ACCESSORIES',
     cta: 'Shop Now',
-    to: '/shop?category=Watches',
+    to: '/category/watches',
     image: EDITORIAL_MEDIA.catAccessories,
     objectPos: 'object-center',
   },
@@ -96,18 +103,68 @@ export const HomePage: React.FC = () => {
   }, [products]);
 
   const cleanWa = settings.whatsappNumber.replace(/\D/g, '');
-  const waHref = `https://wa.me/${cleanWa || '8801XXXXXXXXX'}?text=${encodeURIComponent(
+  const waHref = `https://wa.me/${cleanWa || '8801887602095'}?text=${encodeURIComponent(
     'Hello PYTHOX WORLD, I would like to explore the latest menswear drop.'
   )}`;
 
-  const heroImgSrc = sanitizeMediaUrl(
-    settings.heroImageUrl,
-    EDITORIAL_MEDIA.heroCampaign
+  const [isMobileViewport, setIsMobileViewport] = useState<boolean>(() =>
+    typeof window !== 'undefined' ? window.matchMedia('(max-width: 767px)').matches : false
   );
 
   useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const mq = window.matchMedia('(max-width: 767px)');
+    const onChange = (e: MediaQueryListEvent) => setIsMobileViewport(e.matches);
+    setIsMobileViewport(mq.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+
+  const rawConfiguredHero = sanitizeMediaUrl(
+    settings.heroImageUrl,
+    HERO_CAMPAIGN_URL
+  );
+  const resolvedPrimaryHero =
+    rawConfiguredHero.includes('i.ibb.co.com/JwC1M9WR/')
+      ? HERO_CAMPAIGN_URL
+      : rawConfiguredHero;
+  const [heroUseFallback, setHeroUseFallback] = useState(false);
+  const heroImgSrc = heroUseFallback ? HERO_CAMPAIGN_FALLBACK_URL : resolvedPrimaryHero;
+
+  const [mobileHeroUseFallback, setMobileHeroUseFallback] = useState(false);
+  const resolvedPrimaryMobileHero = sanitizeMediaUrl(
+    settings.mobileHeroImageUrl,
+    MOBILE_HERO_CAMPAIGN_URL
+  );
+  const mobileHeroImgSrc = mobileHeroUseFallback
+    ? MOBILE_HERO_CAMPAIGN_FALLBACK_URL
+    : resolvedPrimaryMobileHero;
+
+  useEffect(() => {
+    setHeroUseFallback(false);
     setBrokenImg((prev) => (prev.hero ? { ...prev, hero: false } : prev));
-  }, [heroImgSrc]);
+  }, [resolvedPrimaryHero]);
+
+  useEffect(() => {
+    setMobileHeroUseFallback(false);
+    setBrokenImg((prev) => (prev.mobileHero ? { ...prev, mobileHero: false } : prev));
+  }, [resolvedPrimaryMobileHero]);
+
+  const handleHeroImgError = () => {
+    if (!heroUseFallback && heroImgSrc !== HERO_CAMPAIGN_FALLBACK_URL) {
+      setHeroUseFallback(true);
+      return;
+    }
+    markBroken('hero');
+  };
+
+  const handleMobileHeroImgError = () => {
+    if (!mobileHeroUseFallback && mobileHeroImgSrc !== MOBILE_HERO_CAMPAIGN_FALLBACK_URL) {
+      setMobileHeroUseFallback(true);
+      return;
+    }
+    markBroken('mobileHero');
+  };
 
   const markBroken = (id: string) => {
     setBrokenImg((prev) => ({ ...prev, [id]: true }));
@@ -121,86 +178,186 @@ export const HomePage: React.FC = () => {
       />
 
       {/* ================= 1. CINEMATIC CAMPAIGN HERO ================= */}
-      <section className="relative w-full bg-[#0B0B0B] text-white overflow-hidden">
-        <div className="relative mx-auto max-w-[1600px] min-h-[470px] sm:min-h-[540px] lg:min-h-[600px] flex flex-col justify-end md:justify-center">
-          {/* Dominant Full-Color Menswear Campaign Photograph */}
-          <div className="absolute inset-0 z-[1]">
-            {!brokenImg.hero ? (
+      <section className="relative w-full bg-[#060814] text-white overflow-hidden">
+        {!isMobileViewport ? (
+          /* Desktop & Tablet Wide Cinematic 16:9 Composition (Existing Desktop Hero Image Preserved) */
+          <div className="flex relative mx-auto max-w-[1600px] aspect-[16/9] min-h-[540px] max-h-[780px] w-full items-center pt-16 bg-[#0B0B0B]">
+            <div className="absolute inset-0 z-[1]">
+              {!brokenImg.hero ? (
+                <img
+                  key={`desktop-${heroImgSrc}`}
+                  src={heroImgSrc}
+                  alt="PYTHOX WORLD Men's Streetwear Campaign"
+                  loading="eager"
+                  decoding="async"
+                  fetchPriority="high"
+                  referrerPolicy="no-referrer"
+                  onError={handleHeroImgError}
+                  className="h-full w-full object-cover object-[62%_20%]"
+                />
+              ) : (
+                <div className="h-full w-full bg-[#121212]" />
+              )}
+
+              {/* Left Editorial Contrast Scrim for Text Legibility */}
+              <div
+                aria-hidden="true"
+                className="absolute inset-y-0 left-0 w-3/4 bg-gradient-to-r from-[#0A0A0A]/82 via-[#0A0A0A]/36 to-transparent pointer-events-none"
+              />
+            </div>
+
+            <div className="relative z-10 w-full max-w-[1400px] mx-auto px-8 lg:px-12 py-14 flex items-center justify-between gap-8">
+              <div className="max-w-[400px] space-y-5">
+                <p className="font-mono text-[11px] uppercase tracking-[0.24em] text-[#D4D4D3]">
+                  STREETWEAR / CULTURE / YOU
+                </p>
+
+                <h1 className="font-street font-bold uppercase text-white tracking-[-0.025em] leading-[0.95] text-[clamp(2.75rem,4.8vw,4.15rem)]">
+                  BUILT FOR
+                  <br />
+                  THE REAL
+                  <br />
+                  ONES.
+                </h1>
+
+                <p className="text-[14px] text-[#E4E4E2]/90 leading-[1.6] max-w-[340px]">
+                  More than clothing — it&apos;s a mindset. PYTHOX WORLD is for the
+                  dreamers, the doers, and the ones who stay solid.
+                </p>
+
+                <div className="pt-2">
+                  <Link
+                    to="/shop"
+                    className="btn-base btn-outline-light group gap-5"
+                  >
+                    <span>SHOP NOW</span>
+                    <ArrowRight className="h-4 w-4 transition-transform duration-200 group-hover:translate-x-1" />
+                  </Link>
+                </div>
+              </div>
+
+              <div className="flex flex-col items-end self-end text-right font-mono text-[10px] uppercase tracking-[0.2em] text-white/70 space-y-1.5">
+                <span>EST. 2024</span>
+                <span className="tabular-nums text-white/55">23.8583° N</span>
+                <div className="flex items-center gap-3">
+                  <span className="h-[1px] w-7 bg-white/40" />
+                  <span className="tabular-nums text-white/55">90.2667° E</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : (
+          /* Dedicated Mobile Responsive Layout (4:5 aspect ratio with overlay inside, zero empty space below) */
+          <div className="relative w-full aspect-[4/5] overflow-hidden bg-[#060814]">
+            {!brokenImg.mobileHero ? (
               <img
-                key={heroImgSrc}
-                src={heroImgSrc}
+                key={`mobile-${mobileHeroImgSrc}`}
+                src={mobileHeroImgSrc}
                 alt="PYTHOX WORLD Men's Streetwear Campaign"
+                loading="eager"
+                decoding="sync"
+                fetchPriority="high"
                 referrerPolicy="no-referrer"
-                onError={() => markBroken('hero')}
-                className="h-full w-full object-cover object-[66%_16%] md:object-[58%_16%] contrast-[1.03]"
+                onError={handleMobileHeroImgError}
+                className="h-full w-full object-cover object-[50%_40%]"
               />
             ) : (
-              <div className="h-full w-full bg-[#121212]" />
+              <div className="h-full w-full bg-[#0B0E24]" />
             )}
 
-            {/* Focused Text-Area Contrast Scrims (keeps hero vivid & colorful) */}
+            {/* Subtle top-left & header vignette for crisp text legibility */}
             <div
               aria-hidden="true"
-              className="hidden md:block absolute inset-0 bg-gradient-to-r from-[#0A0A0A]/80 via-[#0A0A0A]/35 to-transparent"
+              className="absolute inset-x-0 top-0 h-[52%] bg-gradient-to-b from-[#040611]/78 via-[#040611]/38 to-transparent pointer-events-none"
             />
-            <div
-              aria-hidden="true"
-              className="md:hidden absolute inset-x-0 bottom-0 h-3/4 bg-gradient-to-t from-[#0A0A0A]/85 via-[#0A0A0A]/35 to-transparent"
-            />
-          </div>
 
-          {/* Left Editorial Poster Copy & Primary CTA */}
-          <div className="relative z-10 w-full max-w-[1400px] mx-auto px-5 sm:px-8 lg:px-12 py-10 sm:py-14 md:py-24 flex items-end md:items-center justify-between gap-8">
-            <div className="max-w-[390px] space-y-4 sm:space-y-5">
-              <p className="font-mono text-[10.5px] sm:text-[11px] uppercase tracking-[0.24em] text-[#D4D4D3]">
+            {/* Subtle bottom floor scrim for SHOP NOW CTA */}
+            <div
+              aria-hidden="true"
+              className="absolute inset-x-0 bottom-0 h-[26%] bg-gradient-to-t from-[#040611]/88 via-[#040611]/40 to-transparent pointer-events-none"
+            />
+
+            {/* Upper-Left Overlaid Hero Copy in Empty Studio Space */}
+            <div className="absolute top-[82px] sm:top-[96px] left-3.5 sm:left-6 z-10 w-[50%] sm:w-[49%] max-w-[205px] sm:max-w-[260px] space-y-1 sm:space-y-1.5">
+              <p className="font-mono text-[8px] sm:text-[9.5px] uppercase tracking-[0.14em] sm:tracking-[0.2em] text-[#D4D4E6]">
                 STREETWEAR / CULTURE / YOU
               </p>
 
-              <h1 className="font-street font-bold uppercase text-white tracking-[-0.025em] leading-[0.96] text-[clamp(2.5rem,5.2vw,4.1rem)]">
+              <h1 className="font-street font-bold uppercase text-white tracking-[-0.025em] leading-[0.94] text-[clamp(1.25rem,5.8vw,1.95rem)] drop-shadow-[0_2px_8px_rgba(4,6,17,0.65)]">
                 BUILT FOR
                 <br />
-                THE REAL
-                <br />
-                ONES.
+                THE REAL ONES.
               </h1>
 
-              <p className="text-[13px] sm:text-[14px] text-[#D9D9D9]/90 leading-[1.6] max-w-[330px]">
+              <p className="text-[10px] sm:text-[11.5px] text-[#E6E6F2]/90 leading-[1.34] drop-shadow-[0_1px_4px_rgba(4,6,17,0.75)]">
                 More than clothing — it&apos;s a mindset. PYTHOX WORLD is for the
                 dreamers, the doers, and the ones who stay solid.
               </p>
-
-              <div className="pt-2">
-                <Link
-                  to="/shop"
-                  className="btn-base btn-outline-light group gap-5"
-                >
-                  <span>SHOP NOW</span>
-                  <ArrowRight className="h-4 w-4 transition-transform duration-200 group-hover:translate-x-1" />
-                </Link>
-              </div>
             </div>
 
-            {/* Bottom-Right Subtle Edition Coordinates */}
-            <div className="hidden md:flex flex-col items-end self-end text-right font-mono text-[10px] uppercase tracking-[0.2em] text-white/65 space-y-1.5">
-              <span>EST. 2024</span>
-              <span className="tabular-nums text-white/50">23.8583° N</span>
-              <div className="flex items-center gap-3">
-                <span className="h-[1px] w-7 bg-white/40" />
-                <span className="tabular-nums text-white/50">90.2667° E</span>
-              </div>
+            {/* Mobile-only decorative curved S-arrow guiding eye from hero copy to SHOP NOW */}
+            <div
+              aria-hidden="true"
+              className="md:hidden pointer-events-none select-none absolute left-3.5 sm:left-6 top-[200px] sm:top-[212px] bottom-[58px] sm:bottom-[68px] w-[150px] sm:w-[168px] z-[9]"
+            >
+              <svg
+                viewBox="0 0 120 180"
+                fill="none"
+                preserveAspectRatio="none"
+                className="h-full w-full drop-shadow-[0_0_8px_rgba(167,139,250,0.34)]"
+              >
+                <defs>
+                  <linearGradient id="mobileHeroArrowGrad" x1="62" y1="4" x2="54" y2="175" gradientUnits="userSpaceOnUse">
+                    <stop offset="0%" stopColor="#C4B5FD" stopOpacity="0.30" />
+                    <stop offset="45%" stopColor="#DDD6FE" stopOpacity="0.74" />
+                    <stop offset="100%" stopColor="#FFFFFF" stopOpacity="0.95" />
+                  </linearGradient>
+                </defs>
+                <path
+                  d="M 62 4 C 98 34, 96 76, 68 106 C 44 132, 46 154, 54 174"
+                  stroke="url(#mobileHeroArrowGrad)"
+                  strokeWidth="1.4"
+                  strokeLinecap="round"
+                  vectorEffect="non-scaling-stroke"
+                />
+                <path
+                  d="M 47 166 L 54 174 L 61 166"
+                  stroke="#FFFFFF"
+                  strokeOpacity="0.95"
+                  strokeWidth="1.4"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  vectorEffect="non-scaling-stroke"
+                />
+              </svg>
+            </div>
+
+            {/* Bottom CTA & Coordinates Bar */}
+            <div className="absolute inset-x-0 bottom-0 z-10 px-3.5 sm:px-6 pb-3.5 sm:pb-5 flex items-center justify-between gap-2">
+              <Link
+                to="/shop"
+                className="btn-base btn-outline-light !min-h-[38px] sm:!min-h-[42px] !px-4 sm:!px-5 !text-[10.5px] sm:!text-[11px] bg-[#060814]/55 backdrop-blur-sm group gap-3"
+              >
+                <span>SHOP NOW</span>
+                <ArrowRight className="h-3.5 w-3.5 transition-transform duration-200 group-hover:translate-x-1" />
+              </Link>
+
+              <span className="font-mono text-[8px] sm:text-[9px] uppercase tracking-[0.14em] text-white/55 tabular-nums whitespace-nowrap">
+                EST. 2024 · 23.8583° N
+              </span>
             </div>
           </div>
-        </div>
+        )}
       </section>
 
-      {/* ================= 2. 4-CARD EDITORIAL CATEGORY TILES ================= */}
-      <section className="mx-auto max-w-[1400px] px-4 sm:px-8 lg:px-12 py-8 sm:py-11">
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-5">
+      {/* ================= 2. 4-CARD EDITORIAL CATEGORY TILES (SINGLE 4-COL ROW ON ALL DEVICES) ================= */}
+      <section className="mx-auto max-w-[1400px] px-3 sm:px-8 lg:px-12 py-4 sm:py-10 lg:py-12">
+        <div className="grid grid-cols-4 gap-2 sm:gap-4 lg:gap-6">
           {CATEGORY_TILES.map((tile) => (
             <Link
               key={tile.id}
               to={tile.to}
-              className="group relative aspect-[4/5] sm:aspect-[4/3] bg-[#141414] overflow-hidden block"
+              className="group relative aspect-square rounded-[12px] sm:rounded-[22px] lg:rounded-[26px] bg-[#141414] border border-black/10 ring-1 ring-inset ring-white/10 shadow-[0_10px_26px_rgba(10,10,10,0.08)] hover:shadow-[0_18px_38px_rgba(10,10,10,0.16)] hover:-translate-y-1 transition-all duration-300 overflow-hidden block"
             >
               {!brokenImg[tile.id] ? (
                 <img
@@ -209,26 +366,26 @@ export const HomePage: React.FC = () => {
                   loading="lazy"
                   referrerPolicy="no-referrer"
                   onError={() => markBroken(tile.id)}
-                  className={`h-full w-full object-cover ${tile.objectPos || 'object-center'} transition-transform duration-500 ease-out [@media(hover:hover)]:group-hover:scale-[1.04]`}
+                  className={`h-full w-full object-cover ${tile.objectPos || 'object-center'} transition-transform duration-500 ease-out [@media(hover:hover)]:group-hover:scale-[1.06]`}
                 />
               ) : (
                 <div className="h-full w-full flex items-center justify-center bg-[#181818] text-white/60">
-                  <Shirt className="h-8 w-8" />
+                  <Shirt className="h-5 w-5 sm:h-8 sm:w-8" />
                 </div>
               )}
 
               <div
                 aria-hidden="true"
-                className="absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-black/75 via-black/25 to-transparent pointer-events-none"
+                className="absolute inset-x-0 bottom-0 h-[70%] sm:h-[58%] bg-gradient-to-t from-black/92 via-black/52 to-transparent pointer-events-none"
               />
 
-              <div className="absolute inset-x-4 bottom-4 sm:inset-x-5 sm:bottom-5 z-10 space-y-1">
-                <h2 className="font-street font-bold uppercase text-white text-sm sm:text-[17px] tracking-[0.06em] leading-tight">
+              <div className="absolute inset-x-1.5 bottom-1.5 sm:inset-x-4 sm:bottom-4 lg:inset-x-5 lg:bottom-5 z-10 space-y-0.5 sm:space-y-1">
+                <h2 className="font-street font-bold uppercase text-white drop-shadow-[0_1px_4px_rgba(0,0,0,0.85)] text-[8.5px] sm:text-[13px] lg:text-[17px] tracking-[0.02em] sm:tracking-[0.06em] leading-[1.1] sm:leading-tight">
                   {tile.title}
                 </h2>
-                <span className="inline-flex items-center gap-1.5 text-[11px] sm:text-xs font-medium text-[#D9D9D9] group-hover:text-white transition-colors">
+                <span className="inline-flex items-center gap-0.5 sm:gap-1.5 text-[7.5px] sm:text-[11px] lg:text-xs font-medium text-[#E0DFDB] drop-shadow-[0_1px_3px_rgba(0,0,0,0.85)] group-hover:text-white transition-colors">
                   <span>{tile.cta}</span>
-                  <ArrowRight className="h-3 w-3 transition-transform duration-200 group-hover:translate-x-1" />
+                  <ArrowRight className="h-2 w-2 sm:h-3 sm:w-3 transition-transform duration-200 group-hover:translate-x-1" />
                 </span>
               </div>
             </Link>
@@ -236,79 +393,89 @@ export const HomePage: React.FC = () => {
         </div>
       </section>
 
-      {/* ================= 3. NEW ARRIVALS / FRESH DROPS SPLIT CAMPAIGN ================= */}
+      {/* ================= 3. NEW ARRIVALS / FRESH DROPS UNIFIED EDITORIAL BANNER ================= */}
       <Reveal>
-        <section className="w-full bg-[#EAE9E4] border-y border-[#DCDBD6]">
-          <div className="mx-auto max-w-[1400px] grid grid-cols-1 lg:grid-cols-12 items-stretch">
-            {/* LEFT: Editorial Copy + View All CTA */}
-            <div className="lg:col-span-4 px-5 sm:px-8 lg:px-12 py-10 sm:py-12 lg:py-16 flex flex-col justify-center space-y-4">
-              <p className="font-mono text-[10.5px] sm:text-[11px] uppercase tracking-[0.22em] text-[#4A4A4A] font-medium">
-                NEW ARRIVALS
-              </p>
+        <section className="mx-auto max-w-[1400px] px-3 sm:px-8 lg:px-12 pb-8 sm:pb-12 pt-1 sm:pt-2">
+          <div className="relative rounded-[18px] sm:rounded-[24px] lg:rounded-[28px] bg-[#EAE9E4] border border-[#DCDBD6] overflow-hidden">
+            <div className="grid grid-cols-[minmax(0,1.12fr)_minmax(0,1.02fr)_minmax(0,0.88fr)] sm:grid-cols-[minmax(0,1.1fr)_minmax(0,1.15fr)_minmax(0,0.85fr)] lg:grid-cols-12 items-stretch min-h-[205px] sm:h-[290px] md:h-[330px] lg:h-[390px] xl:h-[430px]">
+              {/* LEFT: Editorial Copy + View All CTA */}
+              <div className="lg:col-span-4 relative z-10 pl-3 pr-1 py-4 sm:pl-7 sm:pr-3 sm:py-8 lg:pl-12 lg:pr-4 lg:py-12 flex flex-col justify-center items-start gap-1.5 sm:gap-3 lg:gap-4 min-w-0">
+                <p className="font-mono text-[8px] sm:text-[10px] lg:text-[11px] uppercase tracking-[0.16em] sm:tracking-[0.22em] text-[#4A4A4A] font-medium">
+                  NEW ARRIVALS
+                </p>
 
-              <h2 className="font-street font-bold uppercase text-[#0A0A0A] leading-[0.95] tracking-[-0.025em] text-[clamp(2.3rem,4.5vw,3.4rem)]">
-                FRESH
-                <br />
-                DROPS
-              </h2>
+                <h2 className="font-street font-bold uppercase text-[#0A0A0A] leading-[0.94] tracking-[-0.025em] text-[18px] sm:text-[32px] md:text-[38px] lg:text-[48px] xl:text-[54px]">
+                  FRESH
+                  <br />
+                  DROPS
+                </h2>
 
-              <p className="text-[13px] sm:text-sm text-[#404040] leading-[1.6] max-w-[270px]">
-                The latest pieces from PYTHOX WORLD. Small-batch heavyweight cotton.
-                Limited stock. Don&apos;t miss out.
-              </p>
+                <p className="text-[9.5px] sm:text-[12px] lg:text-[13.5px] text-[#404040] leading-[1.35] sm:leading-[1.55] max-w-[260px]">
+                  The latest pieces from PYTHOX WORLD. Small-batch heavyweight cotton.
+                  Limited stock. Don&apos;t miss out.
+                </p>
 
-              <div className="pt-2">
-                <Link
-                  to="/new-arrivals"
-                  className="btn-base btn-primary group gap-4"
-                >
-                  <span>VIEW ALL</span>
-                  <ArrowRight className="h-4 w-4 transition-transform duration-200 group-hover:translate-x-1" />
-                </Link>
+                <div className="pt-1 sm:pt-1.5 lg:pt-2">
+                  <Link
+                    to="/new-arrivals"
+                    className="inline-flex items-center justify-center gap-1.5 sm:gap-3 bg-[#0A0A0A] text-white border border-[#0A0A0A] rounded-[7px] sm:rounded-[10px] px-2.5 py-2 sm:px-5 sm:min-h-[40px] lg:min-h-[44px] font-sans text-[8.5px] sm:text-[11px] lg:text-[12px] font-semibold uppercase tracking-[0.08em] sm:tracking-[0.1em] whitespace-nowrap hover:bg-[#242424] hover:border-[#242424] transition-colors group"
+                  >
+                    <span>VIEW ALL</span>
+                    <ArrowRight className="h-2.5 w-2.5 sm:h-3.5 sm:w-3.5 lg:h-4 lg:w-4 transition-transform duration-200 group-hover:translate-x-1" />
+                  </Link>
+                </div>
               </div>
-            </div>
 
-            {/* CENTER: Blended Lifestyle Editorial Photo */}
-            <div className="lg:col-span-5 relative min-h-[320px] sm:min-h-[380px] lg:min-h-[420px] bg-[#DCDAD4] overflow-hidden">
-              {!brokenImg.freshDrops ? (
-                <img
-                  src={EDITORIAL_MEDIA.catMen}
-                  alt="PYTHOX WORLD Fresh Drops Menswear"
-                  loading="lazy"
-                  referrerPolicy="no-referrer"
-                  onError={() => markBroken('freshDrops')}
-                  className="h-full w-full object-cover object-[50%_14%] contrast-[1.03]"
+              {/* CENTER: Blended Lifestyle Editorial Model Image */}
+              <div className="lg:col-span-5 relative h-full bg-[#E6E4DE] overflow-hidden min-w-0">
+                {!brokenImg.freshDrops ? (
+                  <img
+                    src={EDITORIAL_MEDIA.catMen}
+                    alt="PYTHOX WORLD Fresh Drops Menswear"
+                    loading="lazy"
+                    referrerPolicy="no-referrer"
+                    onError={() => markBroken('freshDrops')}
+                    className="absolute inset-0 h-full w-full object-cover object-[50%_14%] contrast-[1.03]"
+                  />
+                ) : (
+                  <div className="h-full w-full bg-[#DCDAD4]" />
+                )}
+
+                {/* Seamless Horizontal Side Feather Blending into #EAE9E4 */}
+                <div
+                  aria-hidden="true"
+                  className="absolute inset-y-0 left-0 w-5 sm:w-12 lg:w-24 bg-gradient-to-r from-[#EAE9E4] via-[#EAE9E4]/60 to-transparent pointer-events-none"
                 />
-              ) : (
-                <div className="h-full w-full bg-[#DCDAD4]" />
-              )}
-
-              {/* Smooth Desktop Side Feather Blending into #EAE9E4 */}
-              <div
-                aria-hidden="true"
-                className="hidden lg:block absolute inset-y-0 left-0 w-28 bg-gradient-to-r from-[#EAE9E4] via-[#EAE9E4]/55 to-transparent pointer-events-none"
-              />
-              <div
-                aria-hidden="true"
-                className="hidden lg:block absolute inset-y-0 right-0 w-28 bg-gradient-to-l from-[#EAE9E4] via-[#EAE9E4]/55 to-transparent pointer-events-none"
-              />
-            </div>
-
-            {/* RIGHT: Campaign Manifesto + Stylized Script Wordmark */}
-            <div className="lg:col-span-3 px-5 sm:px-8 lg:px-10 py-8 sm:py-10 lg:py-16 flex flex-col justify-center items-start lg:items-end text-left lg:text-right space-y-5">
-              <div className="space-y-1 font-street uppercase text-[#0A0A0A] tracking-[0.06em] text-[15px] sm:text-[17px] leading-[1.35] font-medium">
-                <p>SAME MINDSET.</p>
-                <p>DIFFERENT</p>
-                <p>ENERGY.</p>
+                <div
+                  aria-hidden="true"
+                  className="absolute inset-y-0 right-0 w-5 sm:w-12 lg:w-24 bg-gradient-to-l from-[#EAE9E4] via-[#EAE9E4]/60 to-transparent pointer-events-none"
+                />
               </div>
 
-              <div className="h-[1px] w-14 bg-[#0A0A0A]/45" aria-hidden="true" />
+              {/* RIGHT: Promotional Headline, Supporting Copy & Minimal Signature Detail */}
+              <div className="lg:col-span-3 relative z-10 pr-3 pl-1 py-4 sm:pr-7 sm:pl-3 sm:py-8 lg:pr-12 lg:pl-4 lg:py-12 flex flex-col justify-center items-end text-right gap-1.5 sm:gap-3 lg:gap-4 min-w-0">
+                <p className="font-mono text-[7.5px] sm:text-[9.5px] lg:text-[10.5px] uppercase tracking-[0.14em] sm:tracking-[0.2em] text-[#595959]">
+                  SERIES 04
+                </p>
 
-              {/* Signature Script Mark */}
-              <div className="-rotate-6 select-none pt-1" aria-label="Pythox signature">
-                <span className="font-editorial italic font-bold text-2xl sm:text-[28px] text-[#0A0A0A] tracking-tight underline decoration-1 underline-offset-4">
-                  Pythox
-                </span>
+                <div className="space-y-0.5 font-street uppercase text-[#0A0A0A] tracking-[0.03em] sm:tracking-[0.06em] text-[9.5px] sm:text-[14px] md:text-[16px] lg:text-[18px] leading-[1.2] sm:leading-[1.3] font-semibold">
+                  <p>SAME MINDSET.</p>
+                  <p>DIFFERENT</p>
+                  <p>ENERGY.</p>
+                </div>
+
+                <p className="text-[8.5px] sm:text-[11px] lg:text-[12.5px] text-[#4A4A4A] leading-[1.3] sm:leading-[1.5] max-w-[185px]">
+                  460 GSM heavyweight cuts engineered for daily movement.
+                </p>
+
+                <div className="h-[1px] w-7 sm:w-12 lg:w-14 bg-[#0A0A0A]/40 my-0.5" aria-hidden="true" />
+
+                {/* Signature Script Mark */}
+                <div className="-rotate-6 select-none" aria-label="Pythox signature">
+                  <span className="font-editorial italic font-bold text-[15px] sm:text-[22px] lg:text-[28px] text-[#0A0A0A] tracking-tight underline decoration-1 underline-offset-4">
+                    Pythox
+                  </span>
+                </div>
               </div>
             </div>
           </div>
@@ -508,7 +675,7 @@ export const HomePage: React.FC = () => {
                 <Instagram className="h-4 w-4" />
               </a>
               <a
-                href={sanitizeExternalHref(settings.facebookUrl, 'https://facebook.com/pythoxworld')}
+                href={sanitizeExternalHref(settings.facebookUrl, 'https://www.facebook.com/share/1A8c2wEDBX/')}
                 target="_blank"
                 rel="noreferrer"
                 aria-label="Facebook"
@@ -521,6 +688,11 @@ export const HomePage: React.FC = () => {
                 target="_blank"
                 rel="noreferrer"
                 aria-label="WhatsApp"
+                onClick={() =>
+                  trackPixelEvent('Contact', {
+                    content_name: 'Homepage WhatsApp Concierge',
+                  })
+                }
                 className="btn-base btn-dark-ghost btn-icon"
               >
                 <MessageCircle className="h-4 w-4" />

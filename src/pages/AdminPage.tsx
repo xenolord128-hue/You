@@ -1,14 +1,20 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
+  ArrowDown,
   ArrowLeft,
+  ArrowUp,
   Copy,
+  ExternalLink,
+  Eye,
+  EyeOff,
   Image as ImageIcon,
   Lock,
+  Monitor,
   Plus,
   RotateCcw,
   Search,
-  ShieldCheck,
+  Smartphone,
   Trash2,
   Upload,
   X,
@@ -24,11 +30,21 @@ import {
   ProductStatus,
 } from '../types/ecommerce';
 import { formatBDT, sanitizeExternalHref, sanitizeMediaUrl, sanitizePixelId } from '../lib/formatters';
-import { ADMIN_EMAIL } from '../lib/firebase';
 import { uploadMediaToFirebase } from '../services/mediaService';
-import { BRAND_LOCATION, EDITORIAL_MEDIA } from '../config/storeConfig';
+import {
+  BRAND_LOCATION,
+  EDITORIAL_MEDIA,
+  MOBILE_HERO_CAMPAIGN_URL,
+  resolveBundledMediaUrl,
+  sanitizeHeroSettingUrl,
+} from '../config/storeConfig';
 import { SeoHead } from '../components/SeoHead';
 import { AdminProductUploadForm } from '../components/AdminProductUploadForm';
+import {
+  countProductsInCategory,
+  getSortedCategories,
+  productMatchesCategory,
+} from '../lib/categoryUtils';
 
 type AdminTab =
   | 'overview'
@@ -119,7 +135,7 @@ const REVENUE_SHADES = ['#0A0A0A', '#2E2E2E', '#4A4A4A', '#7A7A79', '#A3A3A2', '
 const GUIDE_ITEMS: { title: string; text: string }[] = [
   {
     title: 'Unlock the panel',
-    text: 'Visit /admin and sign in with the authorized administrator Google account to unlock the console.',
+    text: 'Visit /admin and enter your administrator password to unlock the management console.',
   },
   {
     title: 'Add a product',
@@ -224,9 +240,15 @@ function getPillStyle(status: string): React.CSSProperties {
 export const AdminPage: React.FC = () => {
   const {
     serverConnected,
+    backendConnected,
+    isFirebaseAdminLinked,
     authReady,
     isAdminAuthenticated,
+    adminSetupRequired,
     adminUserEmail,
+    adminSessionToken,
+    setupAdminPassword,
+    loginAdminWithPassword,
     signInAdmin,
     signOutAdminUser,
     adminProducts,
@@ -241,6 +263,8 @@ export const AdminPage: React.FC = () => {
     deleteProduct,
     upsertCategory,
     deleteCategory,
+    reorderCategories,
+    restoreDefaultCategories,
     upsertCollection,
     upsertCoupon,
     deleteCoupon,
@@ -250,11 +274,15 @@ export const AdminPage: React.FC = () => {
     showToast,
   } = useStore();
 
+  const [passwordInput, setPasswordInput] = useState('');
+  const [confirmPasswordInput, setConfirmPasswordInput] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [loginError, setLoginError] = useState('');
   const [loggingIn, setLoggingIn] = useState(false);
 
   const [activeTab, setActiveTab] = useState<AdminTab>('overview');
   const [isSeeding, setIsSeeding] = useState(false);
+  const [linkingCloud, setLinkingCloud] = useState(false);
 
   // Order delivery notes local edits
   const [orderNotes, setOrderNotes] = useState<Record<string, string>>({});
@@ -317,6 +345,10 @@ export const AdminPage: React.FC = () => {
   const [heroUploading, setHeroUploading] = useState(false);
   const [heroDragOver, setHeroDragOver] = useState(false);
   const heroFileInputRef = useRef<HTMLInputElement | null>(null);
+  const [mobileHeroImageUrl, setMobileHeroImageUrl] = useState(settings.mobileHeroImageUrl || '');
+  const [mobileHeroUploading, setMobileHeroUploading] = useState(false);
+  const [mobileHeroDragOver, setMobileHeroDragOver] = useState(false);
+  const mobileHeroFileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     setInsideDhaka(String(settings.insideDhakaCharge ?? 80));
@@ -332,7 +364,8 @@ export const AdminPage: React.FC = () => {
     setFacebookUrl(settings.facebookUrl || '');
     setInstagramUrl(settings.instagramUrl || '');
     setMetaPixelId(settings.metaPixelId || '');
-    setHeroImageUrl(settings.heroImageUrl || '');
+    setHeroImageUrl(sanitizeHeroSettingUrl(settings.heroImageUrl));
+    setMobileHeroImageUrl(sanitizeHeroSettingUrl(settings.mobileHeroImageUrl));
   }, [settings]);
 
   // Handover checklist state below
@@ -360,17 +393,48 @@ export const AdminPage: React.FC = () => {
     });
   };
 
-  const handleGoogleAdminSignIn = async () => {
-    setLoggingIn(true);
+  const handlePasswordSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (loggingIn) return;
     setLoginError('');
+
+    if (adminSetupRequired) {
+      if (passwordInput.trim().length < 8) {
+        setLoginError('Please choose a password with at least 8 characters.');
+        return;
+      }
+      if (passwordInput !== confirmPasswordInput) {
+        setLoginError('Passwords do not match. Please re-enter.');
+        return;
+      }
+      setLoggingIn(true);
+      try {
+        await setupAdminPassword(passwordInput);
+        setPasswordInput('');
+        setConfirmPasswordInput('');
+      } catch (err: unknown) {
+        setLoginError(
+          err instanceof Error ? err.message : 'Unable to configure administrator password.'
+        );
+      } finally {
+        setLoggingIn(false);
+      }
+      return;
+    }
+
+    if (!passwordInput) {
+      setLoginError('Please enter your administrator password.');
+      return;
+    }
+
+    setLoggingIn(true);
     try {
-      await signInAdmin();
+      await loginAdminWithPassword(passwordInput);
+      setPasswordInput('');
     } catch (err: unknown) {
-      const message =
-        err instanceof Error
-          ? err.message
-          : `Unable to sign in. Use the authorized Google account (${ADMIN_EMAIL}).`;
-      setLoginError(message);
+      setLoginError(
+        err instanceof Error ? err.message : 'Incorrect administrator password.'
+      );
     } finally {
       setLoggingIn(false);
     }
@@ -419,13 +483,7 @@ export const AdminPage: React.FC = () => {
     const rawGroupStats = categories.map((cat) => {
       const catIds = new Set(
         adminProducts
-          .filter(
-            (p) =>
-              p.category.toLowerCase() === cat.name.toLowerCase() ||
-              cat.filterCategories?.some(
-                (fc) => fc.toLowerCase() === p.category.toLowerCase()
-              )
-          )
+          .filter((p) => productMatchesCategory(p, cat, categories))
           .map((p) => p.id)
       );
       const revenue = validOrders.reduce((sum, o) => {
@@ -495,17 +553,16 @@ export const AdminPage: React.FC = () => {
     return adminProducts.filter((p) => {
       if (prodStatusFilter !== 'All' && p.status !== prodStatusFilter) return false;
       if (prodCategoryFilter !== 'All') {
-        const matchedCat = categories.find((c) => c.name === prodCategoryFilter);
-        const matchesDirect = p.category.toLowerCase() === prodCategoryFilter.toLowerCase();
-        const matchesFilterList = matchedCat?.filterCategories?.some(
-          (fc) => fc.toLowerCase() === p.category.toLowerCase()
-        );
-        if (!matchesDirect && !matchesFilterList) return false;
+        if (!productMatchesCategory(p, prodCategoryFilter, categories)) {
+          return false;
+        }
       }
       if (q) {
         const inName = p.name.toLowerCase().includes(q);
         const inSku = p.sku.toLowerCase().includes(q);
-        const inCat = p.category.toLowerCase().includes(q);
+        const inCat =
+          p.category.toLowerCase().includes(q) ||
+          (p.additionalCategories || []).some((c) => c.toLowerCase().includes(q));
         const inSub = (p.subcategory || '').toLowerCase().includes(q);
         const inTags = (p.tags || []).some((t) => t.toLowerCase().includes(q));
         if (!inName && !inSku && !inCat && !inSub && !inTags) return false;
@@ -521,13 +578,13 @@ export const AdminPage: React.FC = () => {
         <SeoHead title="Restricted Access — PYTHOX WORLD" description="Protected Portal" />
         <div className="admin-card w-full max-w-sm p-8 text-center space-y-3 modal-enter">
           <div className="mx-auto h-9 w-9 rounded-full border-2 border-[#D4D4D3] border-t-[#0A0A0A] animate-spin" />
-          <p className="admin-lbl">Verifying Firebase Session</p>
+          <p className="admin-lbl">Verifying Admin Session</p>
         </div>
       </div>
     );
   }
 
-  // 2) Admin Panel Google Auth Gate
+  // 2) Admin Panel Password-Only Gate
   if (!isAdminAuthenticated) {
     return (
       <div className="admin-console justify-center items-center p-4 sm:p-6">
@@ -553,38 +610,90 @@ export const AdminPage: React.FC = () => {
             </span>
           </div>
 
-          <div className="space-y-2">
-            <h1 className="text-2xl text-[#0A0A0A]">Administrator Access</h1>
+          <div className="space-y-1.5">
+            <h1 className="text-2xl text-[#0A0A0A]">
+              {adminSetupRequired ? 'Set Admin Password' : 'Administrator Access'}
+            </h1>
             <p className="text-[13px] text-[#6A6A6A] leading-relaxed">
-              Sign in with the verified Google administrator account to manage Firestore products, orders, and Firebase Storage media uploads.
+              {adminSetupRequired
+                ? 'Create your administrator password to secure and unlock the store dashboard.'
+                : 'Enter the administrator password to manage products, media uploads, categories, and orders.'}
             </p>
           </div>
 
-          <div className="rounded-[10px] border border-[#E2E2E1] bg-[#F7F7F6] px-3.5 py-3 flex items-start gap-2.5">
-            <ShieldCheck className="h-4 w-4 text-[#0A0A0A] shrink-0 mt-0.5" />
-            <div className="text-[12px] text-[#4A4A4A] leading-snug">
-              Authorized account: <span className="font-semibold text-[#0A0A0A]">{ADMIN_EMAIL}</span>
+          <form onSubmit={(e) => void handlePasswordSubmit(e)} className="space-y-4">
+            <div className="admin-fld">
+              <label className="admin-lbl" htmlFor="admin-password-input">
+                {adminSetupRequired ? 'New Administrator Password' : 'Administrator Password'}
+              </label>
+              <div className="relative">
+                <input
+                  id="admin-password-input"
+                  type={showPassword ? 'text' : 'password'}
+                  autoComplete={adminSetupRequired ? 'new-password' : 'current-password'}
+                  autoFocus
+                  required
+                  value={passwordInput}
+                  onChange={(e) => setPasswordInput(e.target.value)}
+                  placeholder={
+                    adminSetupRequired
+                      ? 'Minimum 8 characters'
+                      : 'Enter administrator password'
+                  }
+                  className="admin-inp !h-11 pr-11"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((v) => !v)}
+                  aria-label={showPassword ? 'Hide password' : 'Show password'}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 h-8 w-8 rounded-[7px] text-[#6A6A6A] hover:text-[#0A0A0A] hover:bg-[#F1F1F0] inline-flex items-center justify-center cursor-pointer"
+                >
+                  {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
             </div>
-          </div>
 
-          {loginError && (
-            <p
-              role="alert"
-              aria-live="polite"
-              className="rounded-[9px] border border-[#0A0A0A] bg-[#F1F1F0] px-3.5 py-2.5 text-xs font-medium text-[#0A0A0A]"
+            {adminSetupRequired && (
+              <div className="admin-fld">
+                <label className="admin-lbl" htmlFor="admin-password-confirm">
+                  Confirm Password
+                </label>
+                <input
+                  id="admin-password-confirm"
+                  type={showPassword ? 'text' : 'password'}
+                  autoComplete="new-password"
+                  required
+                  value={confirmPasswordInput}
+                  onChange={(e) => setConfirmPasswordInput(e.target.value)}
+                  placeholder="Re-enter administrator password"
+                  className="admin-inp !h-11"
+                />
+              </div>
+            )}
+
+            {loginError && (
+              <p
+                role="alert"
+                aria-live="polite"
+                className="rounded-[9px] border border-[#0A0A0A] bg-[#F1F1F0] px-3.5 py-2.5 text-xs font-medium text-[#0A0A0A]"
+              >
+                {loginError}
+              </p>
+            )}
+
+            <button
+              type="submit"
+              disabled={loggingIn}
+              className="admin-btn admin-btn-dark w-full !h-11 font-semibold inline-flex items-center justify-center gap-2"
             >
-              {loginError}
-            </p>
-          )}
-
-          <button
-            type="button"
-            disabled={loggingIn}
-            onClick={() => void handleGoogleAdminSignIn()}
-            className="admin-btn admin-btn-dark w-full h-11 font-semibold inline-flex items-center justify-center gap-2.5"
-          >
-            {loggingIn ? 'Signing in...' : 'Sign in with Google'}
-          </button>
+              <Lock className="h-4 w-4" />
+              {loggingIn
+                ? 'Verifying...'
+                : adminSetupRequired
+                  ? 'Save Password & Open Admin Panel'
+                  : 'Unlock Admin Panel'}
+            </button>
+          </form>
 
           <div className="pt-3 border-t border-[#ECECEB] flex items-center justify-between">
             <Link
@@ -606,6 +715,24 @@ export const AdminPage: React.FC = () => {
       await syncCatalog();
     } finally {
       setIsSeeding(false);
+    }
+  };
+
+  const handleLinkFirebaseCloud = async () => {
+    if (linkingCloud) return;
+    setLinkingCloud(true);
+    try {
+      await signInAdmin();
+      await syncCatalog();
+      showToast('Firebase Cloud Sync linked & catalog mirrored');
+    } catch (err: unknown) {
+      showToast(
+        err instanceof Error
+          ? err.message
+          : 'Unable to link Firebase Cloud account right now.'
+      );
+    } finally {
+      setLinkingCloud(false);
     }
   };
 
@@ -674,12 +801,12 @@ export const AdminPage: React.FC = () => {
   };
 
   const handleCategoryImageUpload = async (file: File | undefined) => {
-    if (!file) return;
+    if (!file || catUploadingImg) return;
     setCatUploadingImg(true);
     try {
-      const url = await uploadMediaToFirebase(file, 'categories');
+      const url = await uploadMediaToFirebase(file, 'categories', undefined, adminSessionToken);
       setCatImageInput(url);
-      showToast('Category cover image uploaded to Firebase Storage');
+      showToast('Category cover image uploaded');
     } catch (err: unknown) {
       showToast(err instanceof Error ? err.message : 'Unable to upload cover image.');
     } finally {
@@ -787,14 +914,14 @@ export const AdminPage: React.FC = () => {
   };
 
   const handleHeroImageUpload = async (file: File | undefined) => {
-    if (!file) return;
+    if (!file || heroUploading) return;
     if (file.type && !file.type.startsWith('image/')) {
       showToast('Please select a valid image file (JPG, PNG, WEBP).');
       return;
     }
     setHeroUploading(true);
     try {
-      const url = await uploadMediaToFirebase(file, 'hero');
+      const url = await uploadMediaToFirebase(file, 'hero', undefined, adminSessionToken);
       setHeroImageUrl(url);
       await updateStoreSettings({ heroImageUrl: url });
       showToast('Homepage hero image uploaded & live');
@@ -819,7 +946,46 @@ export const AdminPage: React.FC = () => {
     try {
       await updateStoreSettings({ heroImageUrl: '' });
       setHeroImageUrl('');
-      showToast('Hero banner reset to default campaign image');
+      showToast('Desktop hero banner reset to default campaign image');
+    } catch {
+      // Toast already surfaced by StoreContext
+    }
+  };
+
+  const handleMobileHeroImageUpload = async (file: File | undefined) => {
+    if (!file || mobileHeroUploading) return;
+    if (file.type && !file.type.startsWith('image/')) {
+      showToast('Please select a valid image file (JPG, PNG, WEBP).');
+      return;
+    }
+    setMobileHeroUploading(true);
+    try {
+      const url = await uploadMediaToFirebase(file, 'hero', undefined, adminSessionToken);
+      setMobileHeroImageUrl(url);
+      await updateStoreSettings({ mobileHeroImageUrl: url });
+      showToast('Mobile hero image (4:5) uploaded & live');
+    } catch (err: unknown) {
+      showToast(err instanceof Error ? err.message : 'Unable to upload mobile hero image.');
+    } finally {
+      setMobileHeroUploading(false);
+    }
+  };
+
+  const handleMobileHeroDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setMobileHeroDragOver(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) {
+      void handleMobileHeroImageUpload(file);
+    }
+  };
+
+  const handleResetMobileHeroImage = async () => {
+    try {
+      await updateStoreSettings({ mobileHeroImageUrl: '' });
+      setMobileHeroImageUrl('');
+      showToast('Mobile hero banner reset to default campaign image');
     } catch {
       // Toast already surfaced by StoreContext
     }
@@ -830,7 +996,14 @@ export const AdminPage: React.FC = () => {
     const rawHero = heroImageUrl.trim();
     const safeHero = rawHero ? sanitizeMediaUrl(rawHero, '') : '';
     if (rawHero && !safeHero) {
-      showToast('Hero banner URL must start with https://, http://, or /uploads/.');
+      showToast('Desktop hero banner URL must start with https://, http://, or /uploads/.');
+      return;
+    }
+
+    const rawMobileHero = mobileHeroImageUrl.trim();
+    const safeMobileHero = rawMobileHero ? sanitizeMediaUrl(rawMobileHero, '') : '';
+    if (rawMobileHero && !safeMobileHero) {
+      showToast('Mobile hero banner URL must start with https://, http://, or /uploads/.');
       return;
     }
 
@@ -865,10 +1038,11 @@ export const AdminPage: React.FC = () => {
         supportPhone: supportPhone.trim(),
         whatsappNumber: whatsappNumber.trim(),
         messengerHandle: messengerHandle.trim(),
-        facebookUrl: safeFb || 'https://facebook.com/pythoxworld',
+        facebookUrl: safeFb || 'https://www.facebook.com/share/1A8c2wEDBX/',
         instagramUrl: safeIg || 'https://instagram.com/pythoxworld',
         metaPixelId: safePixel,
         heroImageUrl: safeHero,
+        mobileHeroImageUrl: safeMobileHero,
       });
     } catch {
       // Toast already surfaced by StoreContext
@@ -968,10 +1142,10 @@ export const AdminPage: React.FC = () => {
         <div className="mt-auto flex flex-col gap-2 pt-5 border-t border-[#262626]">
           <div className="px-1.5 pb-1.5 flex flex-col gap-[3px]">
             <span className="text-[11px] text-[#9A9A9A] tracking-[0.08em] uppercase">
-              Firebase Session
+              Admin Session
             </span>
             <span className="text-[12px] text-[#D4D4D3] truncate">
-              {adminUserEmail || 'Authorized Admin'} · {serverConnected ? 'Firebase Live' : 'Connecting'}
+              {adminUserEmail || 'Authenticated Admin'} · {serverConnected ? 'Database Live' : 'Active'}
             </span>
             <Link
               to="/"
@@ -1014,8 +1188,25 @@ export const AdminPage: React.FC = () => {
           </div>
           <div className="flex flex-wrap gap-2.5 items-center">
             <span className="admin-pill bg-white border border-[#D4D4D3] text-[#6A6A6A]">
-              {serverConnected ? 'Firebase Connected' : 'Offline Mode'}
+              {isFirebaseAdminLinked && backendConnected
+                ? 'Server + Cloud Sync Live'
+                : backendConnected
+                  ? 'Server Database Live'
+                  : serverConnected
+                    ? 'Database Connected'
+                    : 'Offline'}
             </span>
+            {!isFirebaseAdminLinked && (
+              <button
+                type="button"
+                disabled={linkingCloud}
+                onClick={() => void handleLinkFirebaseCloud()}
+                className="admin-btn inline-flex items-center gap-1.5"
+                title="Optionally link Google Admin (lord79915@gmail.com) to mirror products and media to Firebase Firestore"
+              >
+                {linkingCloud ? 'Linking Cloud...' : 'Link Cloud Sync'}
+              </button>
+            )}
             <button
               type="button"
               className="admin-btn inline-flex items-center gap-1.5"
@@ -1404,6 +1595,11 @@ export const AdminPage: React.FC = () => {
                             {p.subcategory && (
                               <span className="admin-sub truncate">{p.subcategory}</span>
                             )}
+                            {p.additionalCategories && p.additionalCategories.length > 0 && (
+                              <span className="admin-sub truncate">
+                                + {p.additionalCategories.join(', ')}
+                              </span>
+                            )}
                           </div>
 
                           <div className="flex flex-col gap-0.5 tabular-nums">
@@ -1789,88 +1985,152 @@ export const AdminPage: React.FC = () => {
 
         {/* ================= CATEGORIES ================= */}
         {activeTab === 'categories' && (
-          <div className="flex flex-wrap gap-[22px] items-start">
-            <div className="flex-[999_1_520px] min-w-0 grid grid-cols-[repeat(auto-fill,minmax(290px,1fr))] gap-[18px]">
-              {categories.length === 0 ? (
-                <div className="admin-card p-8 col-span-full text-center text-[13px] text-[#6A6A6A]">
-                  No categories defined yet. Create your first category using the panel.
-                </div>
-              ) : (
-                categories.map((cat) => {
-                  const count = adminProducts.filter(
-                    (p) =>
-                      p.category.toLowerCase() === cat.name.toLowerCase() ||
-                      cat.filterCategories?.some(
-                        (fc) => fc.toLowerCase() === p.category.toLowerCase()
-                      )
-                  ).length;
-                  const imgBroken = brokenImages[`cat-${cat.id}`];
-                  return (
-                    <section key={cat.id} className="admin-card overflow-hidden flex flex-col">
-                      <div className="admin-stripe relative h-[150px] flex items-end justify-between p-3">
-                        {cat.image && !imgBroken && (
-                          <img
-                            src={cat.image}
-                            alt={cat.name}
-                            onError={() =>
-                              setBrokenImages((prev) => ({ ...prev, [`cat-${cat.id}`]: true }))
-                            }
-                            className="absolute inset-0 w-full h-full object-cover"
-                          />
-                        )}
-                        <span className="admin-pill relative z-10 bg-[#0A0A0A] text-white">
-                          {count} product{count === 1 ? '' : 's'}
-                        </span>
-                      </div>
-                      <div className="p-5 pt-[18px] flex flex-col gap-2.5 flex-1">
-                        <div className="flex items-start justify-between gap-2">
-                          <h3 className="text-[17px]">{cat.name}</h3>
-                          <span className="text-[11px] font-mono text-[#6A6A6A]">/{cat.slug}</span>
-                        </div>
-                        <span className="admin-sub text-[13px] leading-[1.5]">
-                          {cat.description}
-                        </span>
-                        {cat.subcategories && cat.subcategories.length > 0 && (
-                          <div className="flex flex-wrap gap-1.5 pt-1">
-                            {cat.subcategories.map((sub) => (
-                              <span
-                                key={sub}
-                                className="px-2.5 py-0.5 rounded-full bg-[#F1F1F0] border border-[#D4D4D3] text-[11px] text-[#2E2E2E]"
-                              >
-                                {sub}
-                              </span>
-                            ))}
+          <div className="flex flex-col gap-[18px]">
+            <section className="admin-card px-5 py-4 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="text-[16px]">Men&apos;s Fashion Category Hierarchy</h2>
+                <span className="admin-sub">
+                  {categories.length} active categories · Reorder display priority, edit subcategories, or add new menswear sections.
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => void restoreDefaultCategories()}
+                className="admin-btn admin-btn-sm"
+              >
+                <RotateCcw className="h-3.5 w-3.5" /> Restore Default 7 Categories
+              </button>
+            </section>
+
+            <div className="flex flex-wrap gap-[22px] items-start">
+              <div className="flex-[999_1_520px] min-w-0 grid grid-cols-[repeat(auto-fill,minmax(290px,1fr))] gap-[18px]">
+                {categories.length === 0 ? (
+                  <div className="admin-card p-8 col-span-full text-center text-[13px] text-[#6A6A6A]">
+                    No categories defined yet. Restore the default Men&apos;s categories or create one using the form.
+                  </div>
+                ) : (
+                  (() => {
+                    const ordered = getSortedCategories(categories);
+                    const moveCategory = (index: number, delta: -1 | 1) => {
+                      const target = index + delta;
+                      if (target < 0 || target >= ordered.length) return;
+                      const next = [...ordered];
+                      const [picked] = next.splice(index, 1);
+                      next.splice(target, 0, picked);
+                      void reorderCategories(next);
+                    };
+
+                    return ordered.map((cat, idx) => {
+                      const count = countProductsInCategory(
+                        adminProducts,
+                        cat,
+                        ordered
+                      );
+                      const imgBroken = brokenImages[`cat-${cat.id}`];
+                      return (
+                        <section key={cat.id} className="admin-card overflow-hidden flex flex-col">
+                          <div className="admin-stripe relative h-[150px] flex items-end justify-between p-3">
+                            {cat.image && !imgBroken && (
+                              <img
+                                src={cat.image}
+                                alt={cat.name}
+                                onError={() =>
+                                  setBrokenImages((prev) => ({ ...prev, [`cat-${cat.id}`]: true }))
+                                }
+                                className="absolute inset-0 w-full h-full object-cover"
+                              />
+                            )}
+                            <span className="admin-pill relative z-10 bg-[#0A0A0A] text-white">
+                              {count} product{count === 1 ? '' : 's'}
+                            </span>
+                            <span className="admin-pill relative z-10 bg-white text-[#0A0A0A]">
+                              #{idx + 1}
+                            </span>
                           </div>
-                        )}
-                        <div className="mt-auto pt-3 flex items-center gap-2">
-                          <button
-                            type="button"
-                            className="admin-btn admin-btn-sm"
-                            onClick={() => startEditCategory(cat)}
-                          >
-                            Edit
-                          </button>
-                          <button
-                            type="button"
-                            className="admin-btn admin-btn-sm"
-                            onClick={() =>
-                              setConfirmDelete({
-                                kind: 'category',
-                                id: cat.id,
-                                name: cat.name,
-                                productCount: count,
-                              })
-                            }
-                          >
-                            <Trash2 className="h-3 w-3" /> Delete
-                          </button>
-                        </div>
-                      </div>
-                    </section>
-                  );
-                })
-              )}
-            </div>
+                          <div className="p-5 pt-[18px] flex flex-col gap-2.5 flex-1">
+                            <div className="flex items-start justify-between gap-2">
+                              <h3 className="text-[17px]">{cat.name}</h3>
+                              <span className="text-[11px] font-mono text-[#6A6A6A] shrink-0">
+                                /category/{cat.slug}
+                              </span>
+                            </div>
+                            <span className="admin-sub text-[13px] leading-[1.5]">
+                              {cat.description}
+                            </span>
+                            {cat.subcategories && cat.subcategories.length > 0 && (
+                              <div className="flex flex-wrap gap-1.5 pt-1">
+                                {cat.subcategories.map((sub) => (
+                                  <span
+                                    key={sub}
+                                    className="px-2.5 py-0.5 rounded-full bg-[#F1F1F0] border border-[#D4D4D3] text-[11px] text-[#2E2E2E]"
+                                  >
+                                    {sub}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                            <div className="mt-auto pt-3 flex flex-wrap items-center justify-between gap-2">
+                              <div className="flex items-center gap-1.5">
+                                <button
+                                  type="button"
+                                  disabled={idx === 0}
+                                  onClick={() => moveCategory(idx, -1)}
+                                  aria-label={`Move ${cat.name} up`}
+                                  title="Move Up"
+                                  className="admin-btn admin-btn-sm !px-2 disabled:opacity-40"
+                                >
+                                  <ArrowUp className="h-3 w-3" />
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={idx === ordered.length - 1}
+                                  onClick={() => moveCategory(idx, 1)}
+                                  aria-label={`Move ${cat.name} down`}
+                                  title="Move Down"
+                                  className="admin-btn admin-btn-sm !px-2 disabled:opacity-40"
+                                >
+                                  <ArrowDown className="h-3 w-3" />
+                                </button>
+                                <button
+                                  type="button"
+                                  className="admin-btn admin-btn-sm"
+                                  onClick={() => startEditCategory(cat)}
+                                >
+                                  Edit
+                                </button>
+                                <Link
+                                  to={`/category/${cat.slug}`}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  aria-label={`View ${cat.name} storefront page`}
+                                  title="View Live Category Page"
+                                  className="admin-btn admin-btn-sm !px-2.5"
+                                >
+                                  <ExternalLink className="h-3 w-3" />
+                                </Link>
+                              </div>
+                              <button
+                                type="button"
+                                className="admin-btn admin-btn-sm"
+                                onClick={() =>
+                                  setConfirmDelete({
+                                    kind: 'category',
+                                    id: cat.id,
+                                    name: cat.name,
+                                    productCount: count,
+                                  })
+                                }
+                              >
+                                <Trash2 className="h-3 w-3" /> Delete
+                              </button>
+                            </div>
+                          </div>
+                        </section>
+                      );
+                    });
+                  })()
+                )}
+              </div>
 
             <form
               onSubmit={(e) => void handleSaveCategoryForm(e)}
@@ -2019,6 +2279,7 @@ export const AdminPage: React.FC = () => {
                 {catEditingId ? 'Update Category' : 'Create Category'}
               </button>
             </form>
+            </div>
           </div>
         )}
 
@@ -2330,146 +2591,297 @@ export const AdminPage: React.FC = () => {
         {/* ================= SETTINGS ================= */}
         {activeTab === 'settings' && (
           <div className="flex flex-col gap-[22px]">
-            {/* Homepage Hero Banner Drag & Drop Card */}
-            <section className="admin-card p-6 flex flex-col gap-5">
-              <div className="flex flex-wrap justify-between items-center gap-3">
-                <div className="flex flex-col gap-1">
-                  <div className="flex items-center gap-2">
-                    <h2 className="text-[18px]">Homepage Hero Banner</h2>
+            {/* Homepage Hero Banners (Separate Desktop 16:9 & Mobile 4:5) */}
+            <section className="admin-card p-6 flex flex-col gap-7">
+              <div className="flex flex-col gap-1 border-b border-[#E8E8E6] pb-4">
+                <h2 className="text-[18px]">Homepage Hero Banners (Desktop &amp; Mobile)</h2>
+                <span className="admin-sub">
+                  Upload or paste separate hero images for Desktop (16:9) and Mobile (4:5). Changes update the live storefront immediately.
+                </span>
+              </div>
+
+              {/* DESKTOP HERO BANNER */}
+              <div className="flex flex-col gap-4 pb-6 border-b border-[#E8E8E6]">
+                <div className="flex flex-wrap justify-between items-center gap-3">
+                  <div className="flex items-center gap-2.5">
+                    <Monitor className="h-4 w-4 text-[#0A0A0A]" />
+                    <h3 className="text-[15px] font-semibold text-[#0A0A0A]">
+                      Desktop &amp; Tablet Hero Image (16:9 Wide)
+                    </h3>
                     <span className="admin-pill bg-[#0A0A0A] text-white">
                       {heroImageUrl.trim() ? 'Custom Active' : 'Default Campaign'}
                     </span>
                   </div>
-                  <span className="admin-sub">
-                    Drag &amp; drop or select any photo to immediately update the hero image on the storefront homepage.
-                  </span>
+                  {heroImageUrl.trim() && (
+                    <button
+                      type="button"
+                      onClick={() => void handleResetHeroImage()}
+                      className="admin-btn inline-flex items-center gap-1.5"
+                    >
+                      <RotateCcw className="h-3.5 w-3.5" />
+                      Reset Desktop Default
+                    </button>
+                  )}
                 </div>
-                {heroImageUrl.trim() && (
-                  <button
-                    type="button"
-                    onClick={() => void handleResetHeroImage()}
-                    className="admin-btn inline-flex items-center gap-1.5"
-                  >
-                    <RotateCcw className="h-3.5 w-3.5" />
-                    Reset Default
-                  </button>
-                )}
-              </div>
 
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch">
-                {/* Drag & Drop Upload Zone */}
-                <div
-                  role="button"
-                  tabIndex={0}
-                  aria-label="Drag and drop homepage hero image or click to browse"
-                  onClick={() => !heroUploading && heroFileInputRef.current?.click()}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault();
-                      if (!heroUploading) heroFileInputRef.current?.click();
-                    }
-                  }}
-                  onDragEnter={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    setHeroDragOver(true);
-                  }}
-                  onDragOver={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    if (!heroDragOver) setHeroDragOver(true);
-                  }}
-                  onDragLeave={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    setHeroDragOver(false);
-                  }}
-                  onDrop={handleHeroDrop}
-                  className={`lg:col-span-6 min-h-[210px] rounded-[12px] border-2 border-dashed p-6 flex flex-col items-center justify-center text-center gap-3 transition-colors cursor-pointer ${
-                    heroDragOver
-                      ? 'border-[#0A0A0A] bg-[#EAEAE8]'
-                      : 'border-[#C8C8C6] bg-[#FAFAFA] hover:border-[#0A0A0A] hover:bg-[#F3F3F1]'
-                  }`}
-                >
-                  <input
-                    ref={heroFileInputRef}
-                    type="file"
-                    accept="image/*"
-                    className="hidden"
-                    onChange={(e) => {
-                      const f = e.target.files?.[0];
-                      if (f) void handleHeroImageUpload(f);
-                      e.target.value = '';
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch">
+                  {/* Drag & Drop Desktop Upload Zone */}
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    aria-label="Drag and drop desktop hero image or click to browse"
+                    onClick={() => !heroUploading && heroFileInputRef.current?.click()}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        if (!heroUploading) heroFileInputRef.current?.click();
+                      }
                     }}
-                  />
-                  <div className="h-11 w-11 rounded-full bg-[#0A0A0A] text-white flex items-center justify-center">
-                    <Upload className="h-5 w-5" />
-                  </div>
-                  <div className="space-y-1">
-                    <p className="text-[14px] font-semibold text-[#0A0A0A]">
-                      {heroUploading
-                        ? 'Uploading hero image...'
-                        : heroDragOver
-                          ? 'Drop image here to apply'
-                          : 'Drag & drop hero image here'}
-                    </p>
-                    <p className="text-[12px] text-[#6A6A6A]">
-                      or click to browse from your device · JPG, PNG, WEBP up to 10 MB
-                    </p>
-                  </div>
-                </div>
-
-                {/* Live Full-Color Hero Preview */}
-                <div className="lg:col-span-6 flex flex-col gap-3">
-                  <div className="relative h-[210px] rounded-[12px] overflow-hidden border border-[#E2E2E0] bg-[#141414]">
-                    <img
-                      src={sanitizeMediaUrl(heroImageUrl.trim(), EDITORIAL_MEDIA.heroCampaign)}
-                      alt="Homepage hero banner preview"
-                      className="h-full w-full object-cover object-[66%_18%]"
+                    onDragEnter={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setHeroDragOver(true);
+                    }}
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      if (!heroDragOver) setHeroDragOver(true);
+                    }}
+                    onDragLeave={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setHeroDragOver(false);
+                    }}
+                    onDrop={handleHeroDrop}
+                    className={`lg:col-span-6 min-h-[200px] rounded-[12px] border-2 border-dashed p-6 flex flex-col items-center justify-center text-center gap-3 transition-colors cursor-pointer ${
+                      heroDragOver
+                        ? 'border-[#0A0A0A] bg-[#EAEAE8]'
+                        : 'border-[#C8C8C6] bg-[#FAFAFA] hover:border-[#0A0A0A] hover:bg-[#F3F3F1]'
+                    }`}
+                  >
+                    <input
+                      ref={heroFileInputRef}
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (f) void handleHeroImageUpload(f);
+                        e.target.value = '';
+                      }}
                     />
-                    <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/75 via-black/25 to-transparent p-3.5 flex items-center justify-between">
-                      <span className="text-[11px] font-mono uppercase tracking-[0.14em] text-white">
-                        Live Homepage Preview (Full Color)
-                      </span>
-                      <Link
-                        to="/"
-                        className="text-[11px] font-semibold text-white underline underline-offset-2"
-                      >
-                        View Storefront
-                      </Link>
+                    <div className="h-11 w-11 rounded-full bg-[#0A0A0A] text-white flex items-center justify-center">
+                      <Upload className="h-5 w-5" />
+                    </div>
+                    <div className="space-y-1">
+                      <p className="text-[14px] font-semibold text-[#0A0A0A]">
+                        {heroUploading
+                          ? 'Uploading desktop hero image...'
+                          : heroDragOver
+                            ? 'Drop desktop image here'
+                            : 'Drag & drop Desktop Hero image here'}
+                      </p>
+                      <p className="text-[12px] text-[#6A6A6A]">
+                        Recommended 16:9 widescreen · JPG, PNG, WEBP up to 10 MB
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Live Desktop Preview */}
+                  <div className="lg:col-span-6 flex flex-col gap-3">
+                    <div className="relative h-[200px] rounded-[12px] overflow-hidden border border-[#E2E2E0] bg-[#141414]">
+                      <img
+                        src={resolveBundledMediaUrl(heroImageUrl.trim(), EDITORIAL_MEDIA.heroCampaign)}
+                        alt="Desktop homepage hero banner preview"
+                        referrerPolicy="no-referrer"
+                        className="h-full w-full object-cover object-[62%_20%]"
+                      />
+                      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/75 via-black/25 to-transparent p-3.5 flex items-center justify-between">
+                        <span className="text-[11px] font-mono uppercase tracking-[0.14em] text-white">
+                          Desktop Preview (16:9)
+                        </span>
+                        <Link
+                          to="/"
+                          className="text-[11px] font-semibold text-white underline underline-offset-2"
+                        >
+                          View Storefront
+                        </Link>
+                      </div>
                     </div>
                   </div>
                 </div>
+
+                <div className="flex flex-wrap items-end gap-2.5">
+                  <div className="admin-fld flex-1 min-w-[240px]">
+                    <label className="admin-lbl" htmlFor="st-hero-url">
+                      Or paste Desktop Hero Image URL
+                    </label>
+                    <input
+                      className="admin-inp"
+                      id="st-hero-url"
+                      value={heroImageUrl}
+                      onChange={(e) => setHeroImageUrl(e.target.value)}
+                      placeholder="https://... or /uploads/..."
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const trimmed = heroImageUrl.trim();
+                      const safeUrl = trimmed ? sanitizeMediaUrl(trimmed, '') : '';
+                      if (trimmed && !safeUrl) {
+                        showToast('Desktop hero banner URL must start with https://, http://, or /uploads/.');
+                        return;
+                      }
+                      void updateStoreSettings({ heroImageUrl: safeUrl }).catch(() => {});
+                    }}
+                    className="admin-btn admin-btn-dark !h-[42px]"
+                  >
+                    Apply Desktop URL
+                  </button>
+                </div>
               </div>
 
-              <div className="flex flex-wrap items-end gap-2.5">
-                <div className="admin-fld flex-1 min-w-[240px]">
-                  <label className="admin-lbl" htmlFor="st-hero-url">
-                    Or paste custom Hero Image URL
-                  </label>
-                  <input
-                    className="admin-inp"
-                    id="st-hero-url"
-                    value={heroImageUrl}
-                    onChange={(e) => setHeroImageUrl(e.target.value)}
-                    placeholder="https://... or /uploads/..."
-                  />
+              {/* MOBILE HERO BANNER (4:5 PORTRAIT) */}
+              <div className="flex flex-col gap-4">
+                <div className="flex flex-wrap justify-between items-center gap-3">
+                  <div className="flex items-center gap-2.5">
+                    <Smartphone className="h-4 w-4 text-[#0A0A0A]" />
+                    <h3 className="text-[15px] font-semibold text-[#0A0A0A]">
+                      Mobile Hero Image (4:5 Portrait)
+                    </h3>
+                    <span className="admin-pill bg-[#0A0A0A] text-white">
+                      {mobileHeroImageUrl.trim() ? 'Custom Active' : 'Default Campaign'}
+                    </span>
+                  </div>
+                  {mobileHeroImageUrl.trim() && (
+                    <button
+                      type="button"
+                      onClick={() => void handleResetMobileHeroImage()}
+                      className="admin-btn inline-flex items-center gap-1.5"
+                    >
+                      <RotateCcw className="h-3.5 w-3.5" />
+                      Reset Mobile Default
+                    </button>
+                  )}
                 </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const trimmed = heroImageUrl.trim();
-                    const safeUrl = trimmed ? sanitizeMediaUrl(trimmed, '') : '';
-                    if (trimmed && !safeUrl) {
-                      showToast('Hero banner URL must start with https://, http://, or /uploads/.');
-                      return;
-                    }
-                    void updateStoreSettings({ heroImageUrl: safeUrl }).catch(() => {});
-                  }}
-                  className="admin-btn admin-btn-dark !h-[42px]"
-                >
-                  Apply Hero URL
-                </button>
+
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch">
+                  {/* Drag & Drop Mobile Upload Zone */}
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    aria-label="Drag and drop mobile hero image or click to browse"
+                    onClick={() => !mobileHeroUploading && mobileHeroFileInputRef.current?.click()}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        if (!mobileHeroUploading) mobileHeroFileInputRef.current?.click();
+                      }
+                    }}
+                    onDragEnter={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setMobileHeroDragOver(true);
+                    }}
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      if (!mobileHeroDragOver) setMobileHeroDragOver(true);
+                    }}
+                    onDragLeave={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setMobileHeroDragOver(false);
+                    }}
+                    onDrop={handleMobileHeroDrop}
+                    className={`lg:col-span-6 min-h-[210px] rounded-[12px] border-2 border-dashed p-6 flex flex-col items-center justify-center text-center gap-3 transition-colors cursor-pointer ${
+                      mobileHeroDragOver
+                        ? 'border-[#0A0A0A] bg-[#EAEAE8]'
+                        : 'border-[#C8C8C6] bg-[#FAFAFA] hover:border-[#0A0A0A] hover:bg-[#F3F3F1]'
+                    }`}
+                  >
+                    <input
+                      ref={mobileHeroFileInputRef}
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (f) void handleMobileHeroImageUpload(f);
+                        e.target.value = '';
+                      }}
+                    />
+                    <div className="h-11 w-11 rounded-full bg-[#0A0A0A] text-white flex items-center justify-center">
+                      <Upload className="h-5 w-5" />
+                    </div>
+                    <div className="space-y-1">
+                      <p className="text-[14px] font-semibold text-[#0A0A0A]">
+                        {mobileHeroUploading
+                          ? 'Uploading mobile hero image...'
+                          : mobileHeroDragOver
+                            ? 'Drop mobile image here'
+                            : 'Drag & drop Mobile Hero image here'}
+                      </p>
+                      <p className="text-[12px] text-[#6A6A6A]">
+                        Recommended 4:5 vertical portrait · JPG, PNG, WEBP up to 10 MB
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Live 4:5 Mobile Preview */}
+                  <div className="lg:col-span-6 flex items-center justify-center rounded-[12px] border border-[#E2E2E0] bg-[#0B0E24] p-3">
+                    <div className="relative aspect-[4/5] h-[220px] rounded-[10px] overflow-hidden border border-white/15 bg-[#060814] shadow-lg">
+                      <img
+                        src={resolveBundledMediaUrl(mobileHeroImageUrl.trim(), MOBILE_HERO_CAMPAIGN_URL)}
+                        alt="Mobile homepage hero banner preview"
+                        referrerPolicy="no-referrer"
+                        className="h-full w-full object-cover object-[50%_40%]"
+                      />
+                      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/45 to-transparent p-2.5 flex items-center justify-between gap-2">
+                        <span className="text-[9.5px] font-mono uppercase tracking-[0.12em] text-white">
+                          Mobile Preview (4:5)
+                        </span>
+                        <Link
+                          to="/"
+                          className="text-[9.5px] font-semibold text-white underline underline-offset-2 shrink-0"
+                        >
+                          Live
+                        </Link>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-end gap-2.5">
+                  <div className="admin-fld flex-1 min-w-[240px]">
+                    <label className="admin-lbl" htmlFor="st-mobile-hero-url">
+                      Or paste Mobile Hero Image URL
+                    </label>
+                    <input
+                      className="admin-inp"
+                      id="st-mobile-hero-url"
+                      value={mobileHeroImageUrl}
+                      onChange={(e) => setMobileHeroImageUrl(e.target.value)}
+                      placeholder="https://... or /uploads/..."
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const trimmed = mobileHeroImageUrl.trim();
+                      const safeUrl = trimmed ? sanitizeMediaUrl(trimmed, '') : '';
+                      if (trimmed && !safeUrl) {
+                        showToast('Mobile hero banner URL must start with https://, http://, or /uploads/.');
+                        return;
+                      }
+                      void updateStoreSettings({ mobileHeroImageUrl: safeUrl }).catch(() => {});
+                    }}
+                    className="admin-btn admin-btn-dark !h-[42px]"
+                  >
+                    Apply Mobile URL
+                  </button>
+                </div>
               </div>
             </section>
 

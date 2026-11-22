@@ -16,7 +16,7 @@ export const ContactPage: React.FC = () => {
   const [message, setMessage] = useState('');
   const [submitted, setSubmitted] = useState(false);
 
-  const whatsappHref = `https://wa.me/${(settings.whatsappNumber || '8801XXXXXXXXX').replace(
+  const whatsappHref = `https://wa.me/${(settings.whatsappNumber || '8801887602095').replace(
     /\D/g,
     ''
   )}?text=${encodeURIComponent('Hello PYTHOX WORLD, I would like assistance with an order.')}`;
@@ -32,7 +32,10 @@ export const ContactPage: React.FC = () => {
       showToast('Please enter a valid Bangladesh mobile number.');
       return;
     }
-    trackPixelEvent('Lead', { content_name: 'Contact Inquiry' });
+    trackPixelEvent('Contact', {
+      content_name: 'Contact Inquiry Form',
+      content_category: 'Customer Support',
+    });
     setSubmitted(true);
     setName('');
     setEmail('');
@@ -153,6 +156,12 @@ export const ContactPage: React.FC = () => {
                 href={whatsappHref}
                 target="_blank"
                 rel="noreferrer"
+                onClick={() =>
+                  trackPixelEvent('Contact', {
+                    content_name: 'WhatsApp Support',
+                    content_category: 'Customer Support',
+                  })
+                }
                 className="btn-base btn-primary"
               >
                 <MessageCircle className="h-4 w-4" />
@@ -162,6 +171,12 @@ export const ContactPage: React.FC = () => {
                 href={messengerHref}
                 target="_blank"
                 rel="noreferrer"
+                onClick={() =>
+                  trackPixelEvent('Contact', {
+                    content_name: 'Facebook Messenger',
+                    content_category: 'Customer Support',
+                  })
+                }
                 className="btn-base btn-secondary"
               >
                 <MessageCircle className="h-4 w-4" />
@@ -208,7 +223,7 @@ export const ContactPage: React.FC = () => {
             </span>
             <div className="flex items-center gap-4">
               <a
-                href={sanitizeExternalHref(settings.facebookUrl, 'https://facebook.com/pythoxworld')}
+                href={sanitizeExternalHref(settings.facebookUrl, 'https://www.facebook.com/share/1A8c2wEDBX/')}
                 target="_blank"
                 rel="noreferrer"
                 className="text-[#0A0A0A] underline underline-offset-4"

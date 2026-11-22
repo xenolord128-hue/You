@@ -12,6 +12,7 @@
         "shortDescription": { "type": "string", "maxLength": 500 },
         "description": { "type": "string", "minLength": 1, "maxLength": 5000 },
         "category": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "additionalCategories": { "type": "array" },
         "subcategory": { "type": "string", "maxLength": 100 },
         "collection": { "type": "string", "maxLength": 100 },
         "price": { "type": "number" },
@@ -187,7 +188,8 @@
         "instagramUrl": { "type": "string", "maxLength": 500 },
         "metaPixelId": { "type": "string", "maxLength": 40 },
         "announcementText": { "type": "string", "maxLength": 300 },
-        "heroImageUrl": { "type": "string", "maxLength": 2000 }
+        "heroImageUrl": { "type": "string", "maxLength": 2000 },
+        "mobileHeroImageUrl": { "type": "string", "maxLength": 2000 }
       },
       "required": ["id", "insideDhakaCharge", "outsideDhakaCharge", "expressSurcharge", "freeShippingThreshold"]
     },

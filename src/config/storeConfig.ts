@@ -1,4 +1,5 @@
-import { BlogPost, Category, Collection, StoreSettings } from '../types/ecommerce';
+import { BlogPost, Category, Collection, Product, StoreSettings } from '../types/ecommerce';
+import { sanitizeMediaUrl } from '../lib/formatters';
 import mensHeroCampaignImg from '../assets/images/mens_hero_campaign_1794997537605.jpg';
 import heroMenImg from '../assets/images/pythox_hero_men_1794838924637.jpg';
 import catMenImg from '../assets/images/cat_men_1794789696875.jpg';
@@ -19,8 +20,99 @@ export const BRAND_LOGO_URL =
 export const BRAND_LOCATION =
   'Savar Thana Road, Ciramix Bazar, 121/5, Savar, Dhaka';
 
+export const HERO_CAMPAIGN_URL =
+  'https://i.ibb.co/Q3Xg147F/file-0000000043b4820bb5c589a43b57a1e6.png';
+
+export const HERO_CAMPAIGN_FALLBACK_URL =
+  'https://i.ibb.co/2159fT07/file-0000000043b4820bb5c589a43b57a1e6.png';
+
+export const MOBILE_HERO_CAMPAIGN_URL =
+  'https://i.ibb.co/twbZkQJn/file-00000000e2f4820a9a500b31d1ca9fb2.png';
+
+export const MOBILE_HERO_CAMPAIGN_FALLBACK_URL =
+  'https://i.ibb.co.com/DP7GszRm/file-00000000e2f4820a9a500b31d1ca9fb2.png';
+
+const BUNDLED_ASSET_MAP: Record<string, string> = {
+  'mens_hero_campaign_1794997537605.jpg': mensHeroCampaignImg,
+  'pythox_hero_men_1794838924637.jpg': heroMenImg,
+  'cat_men_1794789696875.jpg': catMenImg,
+  'cat_accessories_1794789697980.jpg': catAccessoriesImg,
+  'cat_shoes_1794789696209.jpg': catShoesImg,
+  'pythox_oversized_tshirt_1794838926010.jpg': oversizedTshirtImg,
+  'prod_knit_polo_1794789700428.jpg': knitPoloImg,
+  'prod_linen_shirt_1794789699510.jpg': linenShirtImg,
+  'prod_hoodie_charcoal_1794789698601.jpg': hoodieCharcoalImg,
+  'prod_hoodie_cream_1794789699056.jpg': hoodieCreamImg,
+  'pythox_denim_jeans_1794838925818.jpg': denimJeansImg,
+  'pythox_bomber_jacket_1794838925756.jpg': bomberJacketImg,
+  'pythox_watch_mens_1794838924892.jpg': watchMensImg,
+};
+
+export function resolveBundledMediaUrl(raw?: string | null, fallback = ''): string {
+  const value = (raw || '').trim();
+  if (!value) return fallback;
+  const match = value.match(/(?:^|\/)src\/assets\/images\/([^/?#]+)/i);
+  if (match?.[1]) {
+    return BUNDLED_ASSET_MAP[match[1]] || fallback;
+  }
+  return sanitizeMediaUrl(value, fallback);
+}
+
+export function sanitizeHeroSettingUrl(raw?: string | null): string {
+  return resolveBundledMediaUrl(raw, '');
+}
+
+export function normalizeCategoryMedia(cat: Category): Category {
+  const fallbackMap: Record<string, string> = {
+    'cat-tshirts-polos': oversizedTshirtImg,
+    'cat-shirts': linenShirtImg,
+    'cat-pants-jeans': denimJeansImg,
+    'cat-hoodies-jackets': hoodieCharcoalImg,
+    'cat-sneakers': catShoesImg,
+    'cat-watches': watchMensImg,
+    'cat-accessories': catAccessoriesImg,
+  };
+  const fallback = fallbackMap[cat.id] || catMenImg;
+  return {
+    ...cat,
+    image: resolveBundledMediaUrl(cat.image, fallback),
+  };
+}
+
+export function normalizeCollectionMedia(col: Collection): Collection {
+  const fallbackMap: Record<string, string> = {
+    'urban-essentials': mensHeroCampaignImg,
+    'winter-collection': bomberJacketImg,
+    'executive-minimal': catMenImg,
+  };
+  const fallback = fallbackMap[col.slug] || mensHeroCampaignImg;
+  return {
+    ...col,
+    hero_image: resolveBundledMediaUrl(col.hero_image, fallback),
+  };
+}
+
+export function normalizeProductMedia(product: Product): Product {
+  const images = Array.isArray(product.images)
+    ? product.images.map((img) => resolveBundledMediaUrl(img, '')).filter(Boolean)
+    : [];
+  const primaryImage = resolveBundledMediaUrl(product.primaryImage, images[0] || '');
+  const orderedImages = primaryImage
+    ? [primaryImage, ...images.filter((u) => u !== primaryImage)]
+    : images;
+  const videoUrl = product.videoUrl
+    ? resolveBundledMediaUrl(product.videoUrl, '') || undefined
+    : undefined;
+  return {
+    ...product,
+    images: orderedImages,
+    primaryImage,
+    ...(videoUrl ? { videoUrl } : {}),
+  };
+}
+
 export const EDITORIAL_MEDIA = {
-  heroCampaign: mensHeroCampaignImg,
+  heroCampaign: HERO_CAMPAIGN_URL,
   heroMen: heroMenImg,
   catMen: catMenImg,
   catAccessories: catAccessoriesImg,
@@ -43,65 +135,185 @@ export const DEFAULT_SETTINGS: StoreSettings = {
   freeShippingThreshold: 3000,
   businessAddress: BRAND_LOCATION,
   supportEmail: 'pythoxfashion@gmail.com',
-  supportPhone: '+880 1700-000000',
-  whatsappNumber: '8801700000000',
+  supportPhone: '+880 1887-602095',
+  whatsappNumber: '8801887602095',
   messengerHandle: 'pythoxworld',
-  facebookUrl: 'https://facebook.com/pythoxworld',
+  facebookUrl: 'https://www.facebook.com/share/1A8c2wEDBX/',
   instagramUrl: 'https://instagram.com/pythoxworld',
   metaPixelId: '',
   announcementText: 'Free Delivery on orders over ৳3,000 across Bangladesh',
   heroImageUrl: '',
+  mobileHeroImageUrl: '',
 };
 
 export const DEFAULT_CATEGORIES: Category[] = [
   {
-    id: 'cat-tees',
-    name: 'T-Shirts & Polos',
-    filterCategories: ['T-Shirt', 'Polo Shirt'],
-    subcategories: ['Oversized Tee', 'Boxy Tee', 'Polo Shirt', 'Long Sleeve Tee'],
-    slug: 't-shirts',
+    id: 'cat-tshirts-polos',
+    name: 'T-Shirts & Polo Shirts',
+    filterCategories: [
+      'T-Shirts & Polo Shirts',
+      'T-Shirts & Polos',
+      'T-Shirt',
+      'T-Shirts',
+      'Polo Shirt',
+      'Polo Shirts',
+      'Oversized T-Shirts',
+      'Regular Fit T-Shirts',
+    ],
+    subcategories: [
+      'T-Shirts',
+      'Polo Shirts',
+      'Oversized T-Shirts',
+      'Regular Fit T-Shirts',
+    ],
+    slug: 't-shirts-polo-shirts',
     image: oversizedTshirtImg,
-    description: '260 GSM combed ring-spun boxy tees and fine-gauge knit polos.',
+    description:
+      'Heavyweight ring-spun tees, knit polo shirts, oversized boxy fits, and regular tailored essentials.',
     display_order: 1,
   },
   {
-    id: 'cat-outerwear',
-    name: 'Hoodies & Outerwear',
-    filterCategories: ['Hoodie', 'Jacket'],
-    subcategories: ['Pullover Hoodie', 'Zip Hoodie', 'Sweatshirt', 'Bomber Jacket'],
-    slug: 'hoodies-outerwear',
-    image: hoodieCharcoalImg,
-    description: '460 GSM heavyweight winter fleece, sweatshirts, and matte bombers.',
+    id: 'cat-shirts',
+    name: 'Shirts',
+    filterCategories: [
+      'Shirts',
+      'Shirt',
+      'Casual Shirts',
+      'Formal Shirts',
+      'Overshirts',
+      'Oxford Shirt',
+    ],
+    subcategories: ['Casual Shirts', 'Formal Shirts', 'Overshirts'],
+    slug: 'shirts',
+    image: linenShirtImg,
+    description:
+      'Crisp tailored formal shirts, breathable casual weaves, and structured men’s overshirts.',
     display_order: 2,
   },
   {
-    id: 'cat-shirts-bottoms',
-    name: 'Shirts & Bottoms',
-    filterCategories: ['Shirt', 'Pant', 'Trouser', 'Jeans'],
-    subcategories: ['Oxford Shirt', 'Trouser', 'Cargo Pant', 'Selvedge Jeans'],
-    slug: 'shirts-bottoms',
+    id: 'cat-pants-jeans',
+    name: 'Pants, Trousers & Jeans',
+    filterCategories: [
+      'Pants, Trousers & Jeans',
+      'Jeans',
+      'Trousers',
+      'Trouser',
+      'Casual Pants',
+      'Cargo Pants',
+      'Cargo Pant',
+      'Chinos',
+      'Pant',
+      'Pants',
+      'Selvedge Jeans',
+    ],
+    subcategories: ['Jeans', 'Trousers', 'Casual Pants', 'Cargo Pants', 'Chinos'],
+    slug: 'pants-trousers-jeans',
     image: denimJeansImg,
-    description: 'Tailored Oxford shirts, pleated wool trousers, and raw selvedge denim.',
+    description:
+      'Architectural pleated trousers, raw selvedge denim, tailored chinos, and utilitarian cargos.',
     display_order: 3,
   },
   {
-    id: 'cat-footwear-acc',
-    name: 'Caps, Footwear & Steel',
+    id: 'cat-hoodies-jackets',
+    name: 'Hoodies & Jackets',
     filterCategories: [
-      'Cap',
-      'Sneakers',
-      'Watches',
-      'Wallet',
-      'Belt',
-      'Sunglasses',
-      'Bracelet',
-      'Accessories',
+      'Hoodies & Jackets',
+      'Hoodies & Outerwear',
+      'Hoodies',
+      'Hoodie',
+      'Sweatshirts',
+      'Sweatshirt',
+      'Jackets',
+      'Jacket',
+      'Winter Jackets',
+      'Bomber Jacket',
     ],
-    subcategories: ['Cap', 'Sneakers', 'Watches', 'Leather Goods', 'Accessories'],
-    slug: 'footwear-accessories',
-    image: catAccessoriesImg,
-    description: 'Structured streetwear caps, court suede sneakers, and brushed steel horology.',
+    subcategories: ['Hoodies', 'Sweatshirts', 'Jackets', 'Winter Jackets'],
+    slug: 'hoodies-jackets',
+    image: hoodieCharcoalImg,
+    description:
+      '460 GSM brushed fleece hoodies, heavy crewneck sweatshirts, matte bombers, and winter outerwear.',
     display_order: 4,
+  },
+  {
+    id: 'cat-sneakers',
+    name: 'Sneakers',
+    filterCategories: [
+      'Sneakers',
+      'Sneaker',
+      'Casual Sneakers',
+      'Sports Sneakers',
+      'High-Top Sneakers',
+      'Low-Top Sneakers',
+    ],
+    subcategories: [
+      'Casual Sneakers',
+      'Sports Sneakers',
+      'High-Top Sneakers',
+      'Low-Top Sneakers',
+    ],
+    slug: 'sneakers',
+    image: catShoesImg,
+    description:
+      'Minimalist low-top leather court trainers, structured high-tops, and performance street sneakers.',
+    display_order: 5,
+  },
+  {
+    id: 'cat-watches',
+    name: 'Watches',
+    filterCategories: [
+      'Watches',
+      'Watch',
+      'Classic Watches',
+      'Sports Watches',
+      'Minimal Watches',
+      'Premium Watches',
+    ],
+    subcategories: [
+      'Classic Watches',
+      'Sports Watches',
+      'Minimal Watches',
+      'Premium Watches',
+    ],
+    slug: 'watches',
+    image: watchMensImg,
+    description:
+      'Brushed stainless steel timepieces spanning minimal dials, classic dress cases, and sports chronographs.',
+    display_order: 6,
+  },
+  {
+    id: 'cat-accessories',
+    name: 'Accessories',
+    filterCategories: [
+      'Accessories',
+      'Wallets',
+      'Wallet',
+      'Belts',
+      'Belt',
+      'Caps',
+      'Cap',
+      'Sunglasses',
+      'Bracelets',
+      'Bracelet',
+      'Bags',
+      'Bag',
+      'Other Men’s Accessories',
+      'Leather Goods',
+    ],
+    subcategories: [
+      'Wallets',
+      'Belts',
+      'Caps',
+      'Sunglasses',
+      'Bracelets',
+      'Bags',
+      'Other Men’s Accessories',
+    ],
+    slug: 'accessories',
+    image: catAccessoriesImg,
+    description:
+      'Full-grain leather wallets and belts, structured caps, eyewear, steel bracelets, and carry bags.',
+    display_order: 7,
   },
 ];
 

@@ -49,7 +49,7 @@ service cloud.firestore {
         ])
         && data.keys().hasOnly([
           'id', 'sku', 'name', 'slug', 'shortDescription', 'description',
-          'category', 'subcategory', 'collection', 'price', 'compare_at_price',
+          'category', 'additionalCategories', 'subcategory', 'collection', 'price', 'compare_at_price',
           'images', 'primaryImage', 'videoUrl', 'colors', 'sizes', 'inventory',
           'variantStock', 'tags', 'status', 'rating', 'reviews_count',
           'featured', 'new_arrival', 'best_seller', 'trending',
@@ -72,6 +72,7 @@ service cloud.firestore {
         && data.status in ['Draft', 'Published', 'Unpublished', 'Out of Stock']
         && isValidStr(data.created_at, 1, 64)
         && (!('shortDescription' in data) || isValidStr(data.shortDescription, 0, 500))
+        && (!('additionalCategories' in data) || (data.additionalCategories is list && data.additionalCategories.size() <= 20 && (data.additionalCategories.size() == 0 || data.additionalCategories[0] is string)))
         && (!('subcategory' in data) || isValidStr(data.subcategory, 0, 100))
         && (!('collection' in data) || isValidStr(data.collection, 0, 100))
         && (!('compare_at_price' in data) || data.compare_at_price == null || (data.compare_at_price is number && data.compare_at_price >= 0))
@@ -220,7 +221,7 @@ service cloud.firestore {
           'id', 'insideDhakaCharge', 'outsideDhakaCharge', 'expressSurcharge',
           'freeShippingThreshold', 'businessAddress', 'supportEmail', 'supportPhone',
           'whatsappNumber', 'messengerHandle', 'facebookUrl', 'instagramUrl',
-          'metaPixelId', 'announcementText', 'heroImageUrl'
+          'metaPixelId', 'announcementText', 'heroImageUrl', 'mobileHeroImageUrl'
         ])
         && isValidStr(data.id, 1, 64)
         && data.insideDhakaCharge is number && data.insideDhakaCharge >= 0
@@ -236,7 +237,8 @@ service cloud.firestore {
         && (!('instagramUrl' in data) || isValidStr(data.instagramUrl, 0, 500))
         && (!('metaPixelId' in data) || isValidStr(data.metaPixelId, 0, 40))
         && (!('announcementText' in data) || isValidStr(data.announcementText, 0, 300))
-        && (!('heroImageUrl' in data) || isValidStr(data.heroImageUrl, 0, 2000));
+        && (!('heroImageUrl' in data) || isValidStr(data.heroImageUrl, 0, 2000))
+        && (!('mobileHeroImageUrl' in data) || isValidStr(data.mobileHeroImageUrl, 0, 2000));
     }
 
     function isValidAdminUser(data) {

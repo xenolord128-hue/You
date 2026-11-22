@@ -23,18 +23,11 @@ import {
   ProductStatus,
 } from '../types/ecommerce';
 import { uploadMediaToFirebase } from '../services/mediaService';
+import { DEFAULT_CATEGORIES } from '../config/storeConfig';
+import { findCategoryByIdentifier, getSortedCategories } from '../lib/categoryUtils';
+import { useStore } from '../context/StoreContext';
 
-const FALLBACK_CATEGORIES: ProductCategory[] = [
-  'T-Shirt',
-  'Polo Shirt',
-  'Shirt',
-  'Hoodie',
-  'Jacket',
-  'Jeans',
-  'Sneakers',
-  'Watches',
-  'Accessories',
-];
+const FALLBACK_CATEGORIES: ProductCategory[] = DEFAULT_CATEGORIES.map((c) => c.name);
 
 const PRESET_SIZES = ['XS', 'S', 'M', 'L', 'XL', 'XXL'];
 
@@ -149,6 +142,7 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
   upsertProduct,
   showToast,
 }) => {
+  const { adminSessionToken } = useStore();
   const defaultCategoryName =
     categories[0]?.name || FALLBACK_CATEGORIES[0];
 
@@ -175,7 +169,9 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
   // STOREFRONT PRICING, CATEGORY, TAGS & STATUS DETAILS
   const [sku, setSku] = useState<string>(() => buildInitialSku());
   const [category, setCategory] = useState<ProductCategory>(defaultCategoryName);
+  const [additionalCategories, setAdditionalCategories] = useState<ProductCategory[]>([]);
   const [subcategory, setSubcategory] = useState('');
+  const [customSubcategoryMode, setCustomSubcategoryMode] = useState(false);
   const [collection, setCollection] = useState<string>(
     collections[0]?.slug || 'urban-essentials'
   );
@@ -249,7 +245,9 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
     setVideo(null);
     setSku(buildInitialSku());
     setCategory(categories[0]?.name || FALLBACK_CATEGORIES[0]);
+    setAdditionalCategories([]);
     setSubcategory('');
+    setCustomSubcategoryMode(false);
     setCollection(collections[0]?.slug || 'urban-essentials');
     setPrice('1490');
     setSalePrice('');
@@ -272,8 +270,16 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
     if (!preserveSuccessBanner) setSuccessBanner(null);
   };
 
-  // Populate form when editing an existing product or resetting back to Add mode
+  // Populate form only when switching between Add mode and a specific editingProduct.id
+  // (never wipe in-progress fields if background categories/collections refresh)
+  const prevEditKeyRef = useRef<string | null | undefined>(undefined);
   useEffect(() => {
+    const nextEditKey = editingProduct?.id || null;
+    if (prevEditKeyRef.current === nextEditKey) {
+      return;
+    }
+    prevEditKeyRef.current = nextEditKey;
+
     imagesRef.current.forEach((img) => {
       if (img.objectUrl) URL.revokeObjectURL(img.objectUrl);
     });
@@ -295,7 +301,9 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
       setVideo(null);
       setSku(buildInitialSku());
       setCategory(categories[0]?.name || FALLBACK_CATEGORIES[0]);
+      setAdditionalCategories([]);
       setSubcategory('');
+      setCustomSubcategoryMode(false);
       setCollection(collections[0]?.slug || 'urban-essentials');
       setPrice('1490');
       setSalePrice('');
@@ -362,8 +370,21 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
     }
 
     setSku(editingProduct.sku || buildInitialSku());
-    setCategory(editingProduct.category || categories[0]?.name || FALLBACK_CATEGORIES[0]);
+    const resolvedCat =
+      findCategoryByIdentifier(categories, editingProduct.category)?.name ||
+      editingProduct.category ||
+      categories[0]?.name ||
+      FALLBACK_CATEGORIES[0];
+    setCategory(resolvedCat);
+    setAdditionalCategories(
+      Array.isArray(editingProduct.additionalCategories)
+        ? editingProduct.additionalCategories.filter(
+            (c) => c && c.toLowerCase() !== resolvedCat.toLowerCase()
+          )
+        : []
+    );
     setSubcategory(editingProduct.subcategory || '');
+    setCustomSubcategoryMode(false);
     setCollection(editingProduct.collection || collections[0]?.slug || 'urban-essentials');
 
     const hasDiscount = Boolean(
@@ -614,6 +635,7 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
         credentials: 'include',
         headers: {
           'Content-Type': 'application/json',
+          ...(adminSessionToken ? { 'X-Admin-Session': adminSessionToken } : {}),
         },
         body: JSON.stringify({ name: name.trim(), category, materials }),
       });
@@ -716,6 +738,7 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
       const hasPendingVideo = Boolean(video?.file && video.status !== 'uploaded');
       const totalSteps = pendingImageCount + (hasPendingVideo ? 1 : 0) + 1;
       let completedSteps = 0;
+      let pendingImageIdx = 0;
 
       const uploadedImages: MediaImageEntry[] = [];
       for (let idx = 0; idx < currentImages.length; idx += 1) {
@@ -725,8 +748,9 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
           continue;
         }
 
+        pendingImageIdx += 1;
         setSubmitStatusText(
-          `Uploading image ${uploadedImages.filter((x) => x.file).length + 1} of ${pendingImageCount} (${item.name})...`
+          `Uploading image ${pendingImageIdx} of ${pendingImageCount} (${item.name})...`
         );
 
         setImages((prev) =>
@@ -749,7 +773,8 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
                 ((completedSteps + pct / 100) / totalSteps) * 90 + 5
               );
               setSubmitProgress(overall);
-            }
+            },
+            adminSessionToken
           );
 
           if (item.objectUrl) URL.revokeObjectURL(item.objectUrl);
@@ -798,7 +823,8 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
                 ((completedSteps + pct / 100) / totalSteps) * 90 + 5
               );
               setSubmitProgress(overall);
-            }
+            },
+            adminSessionToken
           );
 
           if (video.objectUrl) URL.revokeObjectURL(video.objectUrl);
@@ -861,6 +887,9 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
         shortDescription: shortDescription.trim() || undefined,
         description: description.trim(),
         category: category.trim(),
+        additionalCategories: additionalCategories
+          .map((c) => c.trim())
+          .filter((c) => c && c.toLowerCase() !== category.trim().toLowerCase()),
         subcategory: subcategory.trim() || undefined,
         collection,
         price: finalSellingPrice,
@@ -945,27 +974,30 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
 
   const allDisplaySizes = Array.from(new Set([...PRESET_SIZES, ...selectedSizes]));
 
+  const sortedCategoryList = getSortedCategories(
+    categories.length > 0 ? categories : DEFAULT_CATEGORIES
+  );
+
   const categoryOptionNames = Array.from(
     new Set([
-      ...(categories.length > 0
-        ? categories.map((c) => c.name)
-        : FALLBACK_CATEGORIES),
+      ...sortedCategoryList.map((c) => c.name),
       ...(category ? [category] : []),
     ])
   );
 
-  const activeCategoryObj = categories.find(
-    (c) =>
-      c.name.toLowerCase() === category.toLowerCase() ||
-      c.filterCategories?.some((fc) => fc.toLowerCase() === category.toLowerCase())
-  );
+  const activeCategoryObj = findCategoryByIdentifier(sortedCategoryList, category);
 
   const subcategorySuggestions = Array.from(
-    new Set([
-      ...(activeCategoryObj?.subcategories || []),
-      ...(activeCategoryObj?.filterCategories || []),
-    ])
+    new Set(activeCategoryObj?.subcategories || [])
   ).filter(Boolean);
+
+  const toggleAdditionalCategory = (catName: string) => {
+    setAdditionalCategories((prev) =>
+      prev.some((c) => c.toLowerCase() === catName.toLowerCase())
+        ? prev.filter((c) => c.toLowerCase() !== catName.toLowerCase())
+        : [...prev, catName]
+    );
+  };
 
   const numericRegularPreview = Number(price) || 0;
   const numericSalePreview = salePrice.trim() ? Number(salePrice) : 0;
@@ -1818,15 +1850,28 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
 
           <div className="admin-fld">
             <label className="admin-lbl" htmlFor="upload-prod-cat">
-              Product Category <span className="text-[#B91C1C]">*</span>
+              Primary Category <span className="text-[#B91C1C]">*</span>
             </label>
             <select
               id="upload-prod-cat"
               className={`admin-inp ${errors.category ? '!border-[#B91C1C]' : ''}`}
               value={category}
               onChange={(e) => {
-                setCategory(e.target.value);
-                setSubcategory('');
+                const nextCat = e.target.value;
+                setCategory(nextCat);
+                setAdditionalCategories((prev) =>
+                  prev.filter((c) => c.toLowerCase() !== nextCat.toLowerCase())
+                );
+                const matchedCat = findCategoryByIdentifier(sortedCategoryList, nextCat);
+                if (
+                  subcategory &&
+                  !matchedCat?.subcategories?.some(
+                    (s) => s.toLowerCase() === subcategory.toLowerCase()
+                  )
+                ) {
+                  setSubcategory('');
+                }
+                setCustomSubcategoryMode(false);
                 if (errors.category) setErrors((prev) => ({ ...prev, category: undefined }));
               }}
             >
@@ -1844,32 +1889,56 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
           </div>
 
           <div className="admin-fld">
-            <label className="admin-lbl" htmlFor="upload-prod-subcat">
-              Subcategory (Optional)
-            </label>
-            <input
-              id="upload-prod-subcat"
-              list="pw-subcategory-suggestions"
-              className="admin-inp"
-              value={subcategory}
-              onChange={(e) => setSubcategory(e.target.value)}
-              placeholder="Pick or type subcategory"
-            />
-            <datalist id="pw-subcategory-suggestions">
-              {subcategorySuggestions.map((sub) => (
-                <option key={sub} value={sub} />
-              ))}
-            </datalist>
-            {subcategorySuggestions.length > 0 && (
+            <div className="flex items-center justify-between gap-2">
+              <label className="admin-lbl" htmlFor="upload-prod-subcat">
+                Subcategory
+              </label>
+              <button
+                type="button"
+                onClick={() => setCustomSubcategoryMode((v) => !v)}
+                className="text-[11px] font-medium text-[#4A4A4A] hover:text-[#0A0A0A] underline underline-offset-2 cursor-pointer"
+              >
+                {customSubcategoryMode ? 'Use predefined list' : 'Custom'}
+              </button>
+            </div>
+            {customSubcategoryMode ? (
+              <input
+                id="upload-prod-subcat"
+                type="text"
+                className="admin-inp"
+                value={subcategory}
+                onChange={(e) => setSubcategory(e.target.value)}
+                placeholder="Type custom subcategory"
+              />
+            ) : (
+              <select
+                id="upload-prod-subcat"
+                className="admin-inp"
+                value={subcategory}
+                onChange={(e) => setSubcategory(e.target.value)}
+              >
+                <option value="">Select subcategory...</option>
+                {subcategorySuggestions.map((sub) => (
+                  <option key={sub} value={sub}>
+                    {sub}
+                  </option>
+                ))}
+                {subcategory &&
+                  !subcategorySuggestions.some(
+                    (s) => s.toLowerCase() === subcategory.toLowerCase()
+                  ) && <option value={subcategory}>{subcategory}</option>}
+              </select>
+            )}
+            {subcategorySuggestions.length > 0 && !customSubcategoryMode && (
               <div className="flex flex-wrap gap-1.5 pt-1">
-                {subcategorySuggestions.slice(0, 6).map((sub) => {
+                {subcategorySuggestions.map((sub) => {
                   const active = subcategory.toLowerCase() === sub.toLowerCase();
                   return (
                     <button
                       key={sub}
                       type="button"
                       onClick={() => setSubcategory(active ? '' : sub)}
-                      className="px-2.5 py-0.5 rounded-full text-[11px] font-medium cursor-pointer"
+                      className="px-2.5 py-0.5 rounded-full text-[11px] font-medium cursor-pointer transition-colors"
                       style={{
                         backgroundColor: active ? '#0A0A0A' : '#F4F4F3',
                         color: active ? '#FFFFFF' : '#2E2E2E',
@@ -1882,6 +1951,44 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
                 })}
               </div>
             )}
+          </div>
+
+          {/* Multi-Category Assignment */}
+          <div className="admin-fld sm:col-span-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="admin-lbl">
+                Additional Categories (Optional — Assign to Multiple Categories)
+              </span>
+              <span className="admin-sub">
+                {additionalCategories.length} additional selected
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {categoryOptionNames
+                .filter((c) => c.toLowerCase() !== category.toLowerCase())
+                .map((catName) => {
+                  const active = additionalCategories.some(
+                    (c) => c.toLowerCase() === catName.toLowerCase()
+                  );
+                  return (
+                    <button
+                      key={catName}
+                      type="button"
+                      aria-pressed={active}
+                      onClick={() => toggleAdditionalCategory(catName)}
+                      className="h-8 px-3 rounded-[9px] text-[12px] font-medium cursor-pointer transition-colors inline-flex items-center gap-1.5"
+                      style={{
+                        backgroundColor: active ? '#0A0A0A' : '#FFFFFF',
+                        color: active ? '#FFFFFF' : '#2E2E2E',
+                        border: `1px solid ${active ? '#0A0A0A' : '#D4D4D3'}`,
+                      }}
+                    >
+                      <span>{active ? '✓' : '+'}</span>
+                      <span>{catName}</span>
+                    </button>
+                  );
+                })}
+            </div>
           </div>
 
           <div className="admin-fld">

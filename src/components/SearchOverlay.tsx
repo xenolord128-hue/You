@@ -3,13 +3,14 @@ import { Link, useNavigate } from 'react-router-dom';
 import { ArrowRight, Search, X } from 'lucide-react';
 import { useStore } from '../context/StoreContext';
 import { formatBDT } from '../lib/formatters';
-import { trackPixelEvent } from '../lib/metaPixel';
+import { trackSearchEvent } from '../lib/metaPixel';
 
 // Suggestions are derived strictly from published products
 
 export const SearchOverlay: React.FC = () => {
   const {
     products,
+    categories,
     recentSearches,
     addRecentSearch,
     isSearchOpen,
@@ -41,13 +42,10 @@ export const SearchOverlay: React.FC = () => {
     return () => window.removeEventListener('keydown', onKey);
   }, [isSearchOpen, setIsSearchOpen]);
 
-  const popularSuggestions = useMemo(() => {
-    const terms = new Set<string>();
-    products.forEach((p) => {
-      if (p.category) terms.add(p.category);
-    });
-    return Array.from(terms).slice(0, 6);
-  }, [products]);
+  const categoryLinks = useMemo(
+    () => categories.slice(0, 7),
+    [categories]
+  );
 
   const localResults = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -56,6 +54,7 @@ export const SearchOverlay: React.FC = () => {
       (p) =>
         p.name.toLowerCase().includes(q) ||
         p.category.toLowerCase().includes(q) ||
+        (p.additionalCategories || []).some((c) => c.toLowerCase().includes(q)) ||
         (p.subcategory || '').toLowerCase().includes(q) ||
         p.sku.toLowerCase().includes(q) ||
         (p.shortDescription || '').toLowerCase().includes(q) ||
@@ -80,7 +79,7 @@ export const SearchOverlay: React.FC = () => {
     const trimmed = query.trim();
     if (!trimmed) return;
     addRecentSearch(trimmed);
-    trackPixelEvent('Search', { search_string: trimmed });
+    trackSearchEvent(trimmed);
 
     setIsSmartLoading(true);
     try {
@@ -112,7 +111,7 @@ export const SearchOverlay: React.FC = () => {
 
   const goToShopQuery = (term: string) => {
     addRecentSearch(term);
-    trackPixelEvent('Search', { search_string: term });
+    trackSearchEvent(term);
     setIsSearchOpen(false);
     navigate(`/shop?q=${encodeURIComponent(term)}`);
   };
@@ -169,52 +168,49 @@ export const SearchOverlay: React.FC = () => {
         </form>
 
         {!query ? (
-          products.length === 0 ? (
-            <p className="mt-5 text-sm text-[#5C5C5C] px-1">
-              No products available at the moment.
-            </p>
-          ) : (
-            <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 gap-5 text-sm">
-              {popularSuggestions.length > 0 && (
-                <div>
-                  <p className="text-[11px] font-mono font-semibold uppercase tracking-[0.14em] text-[#5C5C5C] mb-3">
-                    Browse Categories
-                  </p>
-                  <div className="flex flex-wrap gap-2">
-                    {popularSuggestions.map((term) => (
-                      <button
-                        key={term}
-                        type="button"
-                        onClick={() => setQuery(term)}
-                        className="chip-btn"
-                      >
-                        {term}
-                      </button>
-                    ))}
-                  </div>
+          <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 gap-5 text-sm">
+            {categoryLinks.length > 0 && (
+              <div>
+                <p className="text-[11px] font-mono font-semibold uppercase tracking-[0.14em] text-[#5C5C5C] mb-3">
+                  Men&apos;s Categories
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {categoryLinks.map((cat) => (
+                    <button
+                      key={cat.id}
+                      type="button"
+                      onClick={() => {
+                        setIsSearchOpen(false);
+                        navigate(`/category/${cat.slug}`);
+                      }}
+                      className="chip-btn"
+                    >
+                      {cat.name}
+                    </button>
+                  ))}
                 </div>
-              )}
-              {recentSearches.length > 0 && (
-                <div>
-                  <p className="text-[11px] font-mono font-semibold uppercase tracking-[0.14em] text-[#5C5C5C] mb-3">
-                    Recent Searches
-                  </p>
-                  <div className="flex flex-wrap gap-2">
-                    {recentSearches.map((term) => (
-                      <button
-                        key={term}
-                        type="button"
-                        onClick={() => setQuery(term)}
-                        className="chip-btn"
-                      >
-                        {term}
-                      </button>
-                    ))}
-                  </div>
+              </div>
+            )}
+            {recentSearches.length > 0 && (
+              <div>
+                <p className="text-[11px] font-mono font-semibold uppercase tracking-[0.14em] text-[#5C5C5C] mb-3">
+                  Recent Searches
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {recentSearches.map((term) => (
+                    <button
+                      key={term}
+                      type="button"
+                      onClick={() => setQuery(term)}
+                      className="chip-btn"
+                    >
+                      {term}
+                    </button>
+                  ))}
                 </div>
-              )}
-            </div>
-          )
+              </div>
+            )}
+          </div>
         ) : (
           <div className="mt-5 space-y-4">
             {smartNote && (

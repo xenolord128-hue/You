@@ -1,8 +1,14 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { BrowserRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { MotionConfig } from 'motion/react';
 import { APIProvider } from '@vis.gl/react-google-maps';
 import { StoreProvider, useStore } from './context/StoreContext';
+import { sanitizePixelId } from './lib/formatters';
+import {
+  clearPendingPixelEvents,
+  initMetaPixel,
+  trackPixelEvent,
+} from './lib/metaPixel';
 import { Header } from './components/Header';
 import { Footer } from './components/Footer';
 import { CartDrawer } from './components/CartDrawer';
@@ -66,16 +72,38 @@ const QuotaBanner: React.FC<{ visible: boolean; onDismiss: () => void }> = ({
 };
 
 const AppShell: React.FC = () => {
-  const { mapsApiKey, toast } = useStore();
+  const { mapsApiKey, settings, toast } = useStore();
   const location = useLocation();
   const isAdminRoute = location.pathname.startsWith('/admin');
+  const isHomeRoute = location.pathname === '/' || location.pathname === '';
   const [quotaExceeded, setQuotaExceeded] = useState(false);
+  const lastPageViewRef = useRef<string>('');
 
   useEffect(() => {
     const handler = () => setQuotaExceeded(true);
     window.addEventListener('gmp-quota-exceeded', handler);
     return () => window.removeEventListener('gmp-quota-exceeded', handler);
   }, []);
+
+  useEffect(() => {
+    if (isAdminRoute) {
+      clearPendingPixelEvents();
+      return;
+    }
+
+    const cleanPixelId = sanitizePixelId(settings.metaPixelId);
+    if (!cleanPixelId) {
+      lastPageViewRef.current = '';
+      return;
+    }
+
+    const routeKey = `${cleanPixelId}::${location.pathname}${location.search}`;
+    if (lastPageViewRef.current === routeKey) return;
+    lastPageViewRef.current = routeKey;
+
+    initMetaPixel(cleanPixelId);
+    trackPixelEvent('PageView');
+  }, [location.pathname, location.search, isAdminRoute, settings.metaPixelId]);
 
   const routes = (
     <MotionConfig reducedMotion="user">
@@ -88,7 +116,9 @@ const AppShell: React.FC = () => {
         />
 
         {!isAdminRoute && <Header />}
-        {!isAdminRoute && <div className="h-[54px] shrink-0" aria-hidden="true" />}
+        {!isAdminRoute && !isHomeRoute && (
+          <div className="h-[84px] sm:h-[92px] shrink-0" aria-hidden="true" />
+        )}
 
         <main className="flex-1">
           <div key={location.pathname} className="page-enter">
@@ -96,6 +126,7 @@ const AppShell: React.FC = () => {
               <Route path="/" element={<HomePage />} />
               <Route path="/shop" element={<ShopPage />} />
               <Route path="/categories" element={<ShopPage />} />
+              <Route path="/category/:categorySlug" element={<ShopPage />} />
               <Route path="/search" element={<ShopPage />} />
               <Route path="/new-arrivals" element={<ShopPage mode="new" />} />
               <Route path="/best-sellers" element={<ShopPage mode="best-sellers" />} />

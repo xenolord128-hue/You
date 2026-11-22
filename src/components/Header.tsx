@@ -37,7 +37,6 @@ export const Header: React.FC = () => {
   } = useStore();
   const location = useLocation();
 
-  const [isHidden, setIsHidden] = useState(false);
   const [isScrolled, setIsScrolled] = useState(false);
 
   const cartCount = cart.reduce((sum, item) => sum + item.quantity, 0);
@@ -47,14 +46,10 @@ export const Header: React.FC = () => {
   }, [location.pathname, location.search, setIsMobileMenuOpen]);
 
   useEffect(() => {
-    let lastY = window.scrollY;
-    setIsScrolled(lastY > 20);
+    setIsScrolled(window.scrollY > 20);
 
     const handleScroll = () => {
-      const y = window.scrollY;
-      setIsHidden(y > lastY && y > 120);
-      setIsScrolled(y > 20);
-      lastY = y;
+      setIsScrolled(window.scrollY > 20);
     };
 
     window.addEventListener('scroll', handleScroll, { passive: true });
@@ -72,45 +67,53 @@ export const Header: React.FC = () => {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isMobileMenuOpen, setIsMobileMenuOpen]);
 
-  // Hide the header completely while the search popup is open
+  // Hide the header while the full-screen search overlay is open
   if (isSearchOpen) return null;
-
-  const shouldHide = isHidden && !isMobileMenuOpen;
 
   return (
     <>
-      <header
-        className={`glass-pill-nav${isScrolled ? ' scrolled' : ''}${
-          shouldHide ? ' hide' : ''
-        }`}
-      >
+      <header className={`glass-pill-nav${isScrolled ? ' scrolled' : ''}`}>
         <div className="glass-pill-nav-inner">
-          {/* Left: Logo + Brand Wordmark */}
-          <Link
-            to="/"
-            aria-label="PYTHOX WORLD Home"
-            className="flex items-center gap-2.5 shrink-0 rounded-[10px] group"
-          >
-            <BrandLogo className="h-7 w-7 transition-transform duration-200 group-hover:scale-[1.03]" zoomOnly />
-            <span className="font-semibold tracking-[0.04em] text-[#fbf9f5] text-[13px] sm:text-[14px] whitespace-nowrap">
-              PYTHOX WORLD
-            </span>
-          </Link>
+          {/* Left: Prominent Framed Logo Emblem + Separated Brand Wordmark */}
+          <div className="flex items-center gap-3 shrink-0">
+            <Link
+              to="/"
+              aria-label="PYTHOX WORLD Home"
+              className="flex items-center gap-3 shrink-0 rounded-[12px] group focus-visible:outline-none"
+            >
+              <BrandLogo
+                className="h-10 w-10 sm:h-11 sm:w-11 transition-transform duration-200 group-hover:scale-[1.04]"
+                zoomOnly
+              />
+              <div className="flex flex-col leading-none">
+                <span className="font-editorial font-bold tracking-[0.12em] text-white text-[13px] sm:text-[15px] whitespace-nowrap">
+                  PYTHOX WORLD
+                </span>
+                <span className="hidden sm:block font-mono text-[9px] uppercase tracking-[0.22em] text-white/60 mt-1">
+                  Dhaka · Archive
+                </span>
+              </div>
+            </Link>
+            <span
+              aria-hidden="true"
+              className="hidden min-[860px]:block h-6 w-px bg-white/15 ml-2"
+            />
+          </div>
 
-          {/* Center: Navigation Links (>= 820px) */}
+          {/* Center: Clean Editorial Navigation Links (>= 820px) */}
           <nav
             aria-label="Primary Navigation"
-            className="hidden min-[820px]:flex items-center gap-1"
+            className="hidden min-[820px]:flex items-center gap-1.5"
           >
             {PRIMARY_LINKS.map((item) => (
               <NavLink
                 key={item.to}
                 to={item.to}
                 className={({ isActive }) =>
-                  `relative px-3.5 py-1.5 rounded-[10px] text-[13px] font-medium whitespace-nowrap transition-colors duration-150 ${
+                  `relative px-3.5 py-2 rounded-[11px] text-[13px] whitespace-nowrap transition-all duration-150 ${
                     isActive
-                      ? 'text-[#0A0A0A] bg-[#F3F2EE] font-semibold'
-                      : 'text-[#B5B1A9] hover:text-[#FBF9F5] hover:bg-white/[0.08]'
+                      ? 'text-white bg-white/[0.15] border border-white/20 font-semibold shadow-[inset_0_1px_0_rgba(255,255,255,0.2)]'
+                      : 'text-white/75 hover:text-white hover:bg-white/[0.08] border border-transparent font-medium'
                   }`
                 }
               >
@@ -119,9 +122,8 @@ export const Header: React.FC = () => {
             ))}
           </nav>
 
-          {/* Right: Search, Cart, and Menu Button */}
-          <div className="flex items-center gap-1.5 shrink-0">
-            {/* Search Icon Button */}
+          {/* Right: Frosted Glass Search, Cart, and Menu Controls */}
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             <button
               type="button"
               onClick={() => {
@@ -129,12 +131,11 @@ export const Header: React.FC = () => {
                 setIsSearchOpen(true);
               }}
               aria-label="Search products"
-              className="h-9 w-9 rounded-[10px] bg-transparent hover:bg-white/[0.1] active:scale-[0.96] text-[#FBF9F5] flex items-center justify-center transition-all duration-150 cursor-pointer"
+              className="h-9 w-9 sm:h-10 sm:w-10 rounded-[11px] bg-white/[0.08] border border-white/12 hover:bg-white/[0.18] hover:border-white/25 active:scale-[0.96] text-white flex items-center justify-center transition-all duration-150 cursor-pointer"
             >
               <Search className="h-[17px] w-[17px]" strokeWidth={1.85} />
             </button>
 
-            {/* Cart Icon Button with Real Cart Count Badge */}
             <button
               type="button"
               onClick={() => {
@@ -142,20 +143,19 @@ export const Header: React.FC = () => {
                 setIsCartOpen(true);
               }}
               aria-label={`Shopping bag, ${cartCount} item${cartCount === 1 ? '' : 's'}`}
-              className="relative h-9 w-9 rounded-[10px] bg-transparent hover:bg-white/[0.1] active:scale-[0.96] text-[#FBF9F5] flex items-center justify-center transition-all duration-150 cursor-pointer"
+              className="relative h-9 w-9 sm:h-10 sm:w-10 rounded-[11px] bg-white/[0.08] border border-white/12 hover:bg-white/[0.18] hover:border-white/25 active:scale-[0.96] text-white flex items-center justify-center transition-all duration-150 cursor-pointer"
             >
               <ShoppingBag className="h-[17px] w-[17px]" strokeWidth={1.85} />
               {cartCount > 0 && (
                 <span
                   key={cartCount}
-                  className="badge-pop absolute top-1 right-1 min-w-[16px] h-[16px] px-1 rounded-full bg-[#ff3b2f] text-[#fbf9f5] text-[9.5px] font-semibold leading-none flex items-center justify-center tabular-nums pointer-events-none"
+                  className="badge-pop absolute -top-1 -right-1 min-w-[17px] h-[17px] px-1 rounded-full bg-[#ff3b2f] text-white text-[9.5px] font-semibold leading-none flex items-center justify-center tabular-nums shadow-sm pointer-events-none"
                 >
                   {cartCount}
                 </span>
               )}
             </button>
 
-            {/* Menu Button */}
             <button
               type="button"
               onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
@@ -166,10 +166,10 @@ export const Header: React.FC = () => {
               }
               aria-expanded={isMobileMenuOpen}
               aria-controls="header-menu-dropdown"
-              className={`h-9 px-3 sm:px-3.5 rounded-[10px] border inline-flex items-center justify-center gap-1.5 font-semibold text-[12px] sm:text-[13px] leading-none active:scale-[0.97] transition-all duration-150 cursor-pointer ${
+              className={`h-9 sm:h-10 px-3 sm:px-4 rounded-[11px] border inline-flex items-center justify-center gap-1.5 font-semibold text-[12px] sm:text-[13px] leading-none active:scale-[0.97] transition-all duration-150 cursor-pointer ${
                 isMobileMenuOpen
-                  ? 'bg-white/[0.14] border-white/30 text-white'
-                  : 'bg-[#F3F2EE] border-[#F3F2EE] text-[#0A0A0A] hover:bg-white'
+                  ? 'bg-white/[0.16] border-white/30 text-white'
+                  : 'bg-white/95 border-white text-[#0A0A0A] hover:bg-white shadow-sm'
               }`}
             >
               {isMobileMenuOpen ? (

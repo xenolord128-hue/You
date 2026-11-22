@@ -1,10 +1,21 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { Search, SlidersHorizontal, X } from 'lucide-react';
 import { useStore } from '../context/StoreContext';
 import { ProductCard } from '../components/ProductCard';
 import { SeoHead } from '../components/SeoHead';
 import { calculateDiscountPercent } from '../lib/formatters';
+import { trackSearchEvent } from '../lib/metaPixel';
+import {
+  countProductsInCategory,
+  countProductsInSubcategory,
+  findCategoryByIdentifier,
+  getSortedCategories,
+  normalizeCategoryKey,
+  productMatchesCategory,
+  productMatchesSubcategory,
+} from '../lib/categoryUtils';
+import { Category } from '../types/ecommerce';
 
 export type ShopMode =
   | 'all'
@@ -53,9 +64,16 @@ const MODE_COPY: Record<ShopMode, { title: string; eyebrow: string; desc: string
 
 export const ShopPage: React.FC<ShopPageProps> = ({ mode = 'all' }) => {
   const { products, categories } = useStore();
+  const { categorySlug } = useParams<{ categorySlug?: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
 
-  const initialCat = searchParams.get('category') || 'All';
+  const sortedCategories = useMemo(
+    () => getSortedCategories(categories),
+    [categories]
+  );
+
+  const initialCat = categorySlug || searchParams.get('category') || 'All';
   const initialSubcat = searchParams.get('subcategory') || 'All';
   const initialQuery = searchParams.get('q') || '';
 
@@ -73,92 +91,34 @@ export const ShopPage: React.FC<ShopPageProps> = ({ mode = 'all' }) => {
   >('featured');
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
 
-  // Sync URL query params if navigation links change ?category= or ?q=
+  // Sync URL route slug (/category/:categorySlug) or query params (?category=, ?subcategory=, ?q=)
   useEffect(() => {
-    const paramCat = searchParams.get('category') || 'All';
-    const paramSub = searchParams.get('subcategory') || 'All';
-    const paramQ = searchParams.get('q') || '';
-    setSelectedCategory(paramCat);
-    setSelectedSubcategory(paramSub);
-    if (paramQ) setSearchText(paramQ);
-  }, [searchParams]);
+    const nextCat = categorySlug || searchParams.get('category') || 'All';
+    const nextSub = searchParams.get('subcategory') || 'All';
+    const nextQ = searchParams.get('q') || '';
+    setSelectedCategory(nextCat);
+    setSelectedSubcategory(nextSub);
+    if (nextQ) setSearchText(nextQ);
+  }, [categorySlug, searchParams]);
 
-  // Dynamic category list from Admin Categories + any extra published product category
-  const categoryOptions = useMemo(() => {
-    const names = new Set<string>(['All']);
-    categories.forEach((c) => {
-      if (c.name) names.add(c.name);
-    });
-    products.forEach((p) => {
-      if (p.category) names.add(p.category);
-    });
-    if (selectedCategory && selectedCategory !== 'All') {
-      names.add(selectedCategory);
-    }
-    return Array.from(names);
-  }, [categories, products, selectedCategory]);
+  const lastTrackedShopSearchRef = useRef<string>('');
+  useEffect(() => {
+    const trimmed = searchText.trim();
+    if (trimmed.length < 2) return;
+    const normalized = trimmed.toLowerCase();
+    if (lastTrackedShopSearchRef.current === normalized) return;
 
-  // Selected Category record (for subcategories and filterCategories matching)
-  const activeCategoryRecord = useMemo(() => {
-    if (selectedCategory === 'All') return undefined;
-    const target = selectedCategory.toLowerCase();
-    return categories.find(
-      (c) =>
-        c.name.toLowerCase() === target ||
-        c.slug.toLowerCase() === target ||
-        c.filterCategories.some((fc) => fc.toLowerCase() === target)
-    );
-  }, [categories, selectedCategory]);
+    const timer = window.setTimeout(() => {
+      lastTrackedShopSearchRef.current = normalized;
+      trackSearchEvent(trimmed);
+    }, 550);
 
-  // Dynamic subcategory chips based on active category + published products
-  const subcategoryOptions = useMemo(() => {
-    const subs = new Set<string>();
-    if (activeCategoryRecord?.subcategories) {
-      activeCategoryRecord.subcategories.forEach((s) => {
-        if (s.trim()) subs.add(s.trim());
-      });
-    }
-    products.forEach((p) => {
-      if (!p.subcategory?.trim()) return;
-      if (selectedCategory === 'All') {
-        subs.add(p.subcategory.trim());
-      } else {
-        const target = selectedCategory.toLowerCase();
-        const matchesCat =
-          p.category.toLowerCase() === target ||
-          activeCategoryRecord?.name.toLowerCase() === p.category.toLowerCase() ||
-          activeCategoryRecord?.filterCategories.some(
-            (fc) => fc.toLowerCase() === p.category.toLowerCase()
-          );
-        if (matchesCat) subs.add(p.subcategory.trim());
-      }
-    });
-    return Array.from(subs);
-  }, [activeCategoryRecord, products, selectedCategory]);
+    return () => window.clearTimeout(timer);
+  }, [searchText]);
 
-  const availableSizes = useMemo(() => {
-    const set = new Set<string>();
-    products.forEach((p) => p.sizes.forEach((s) => s && set.add(s)));
-    return Array.from(set);
-  }, [products]);
-
-  const availableColors = useMemo(() => {
-    const set = new Set<string>();
-    products.forEach((p) => p.colors.forEach((c) => c.name && set.add(c.name)));
-    return Array.from(set);
-  }, [products]);
-
-  const sliderMax = useMemo(() => {
-    const highest = products.reduce((max, p) => Math.max(max, p.price), 0);
-    return Math.max(10000, Math.ceil(highest / 500) * 500);
-  }, [products]);
-
-  const effectiveMaxPrice = maxPrice ?? sliderMax;
-
-  const filtered = useMemo(() => {
-    const q = searchText.trim().toLowerCase();
-
-    const list = products.filter((p) => {
+  // Products scoped by the curated page mode (All, New Arrivals, Best Sellers, etc.)
+  const modeFilteredProducts = useMemo(() => {
+    return products.filter((p) => {
       if (mode === 'new' && !p.new_arrival) return false;
       if (mode === 'best-sellers' && !p.best_seller) return false;
       if (mode === 'trending' && !p.trending) return false;
@@ -170,22 +130,122 @@ export const ShopPage: React.FC<ShopPageProps> = ({ mode = 'all' }) => {
       ) {
         return false;
       }
+      return true;
+    });
+  }, [products, mode]);
 
-      if (selectedCategory !== 'All') {
-        const target = selectedCategory.toLowerCase();
-        const directMatch = p.category.toLowerCase() === target;
-        const groupMatch = activeCategoryRecord
-          ? p.category.toLowerCase() === activeCategoryRecord.name.toLowerCase() ||
-            activeCategoryRecord.filterCategories.some(
-              (fc) => fc.toLowerCase() === p.category.toLowerCase()
-            )
-          : false;
-        if (!directMatch && !groupMatch) return false;
+  // Active Category record (matched by slug, id, name, or filterCategory alias)
+  const activeCategoryRecord = useMemo(() => {
+    return findCategoryByIdentifier(sortedCategories, selectedCategory);
+  }, [sortedCategories, selectedCategory]);
+
+  // Helper to navigate or switch category cleanly with clean SEO URLs
+  const selectCategory = (catOrAll: Category | 'All') => {
+    setSelectedSubcategory('All');
+    setSelectedSize('All');
+    setSelectedColor('All');
+
+    const preservedParams = new URLSearchParams();
+    if (searchText.trim()) preservedParams.set('q', searchText.trim());
+
+    if (catOrAll === 'All') {
+      setSelectedCategory('All');
+      if (mode === 'all') {
+        const qs = preservedParams.toString();
+        navigate(qs ? `/shop?${qs}` : '/shop');
+      } else {
+        setSearchParams(preservedParams);
       }
+      return;
+    }
 
+    setSelectedCategory(catOrAll.slug);
+    if (mode === 'all') {
+      const qs = preservedParams.toString();
+      navigate(qs ? `/category/${catOrAll.slug}?${qs}` : `/category/${catOrAll.slug}`);
+    } else {
+      preservedParams.set('category', catOrAll.slug);
+      setSearchParams(preservedParams);
+    }
+  };
+
+  const selectSubcategory = (sub: string) => {
+    setSelectedSubcategory(sub);
+    const next = new URLSearchParams(searchParams);
+    if (sub === 'All') {
+      next.delete('subcategory');
+    } else {
+      next.set('subcategory', sub);
+    }
+    setSearchParams(next, { replace: true });
+  };
+
+  // Products matching the active category (used to auto-update available subcategories, sizes, and colors)
+  const categoryScopedProducts = useMemo(() => {
+    if (selectedCategory === 'All') return modeFilteredProducts;
+    return modeFilteredProducts.filter((p) =>
+      productMatchesCategory(p, activeCategoryRecord || selectedCategory, sortedCategories)
+    );
+  }, [modeFilteredProducts, selectedCategory, activeCategoryRecord, sortedCategories]);
+
+  // Subcategories for active category (predefined + dynamically discovered from available products)
+  const subcategoryOptions = useMemo(() => {
+    if (selectedCategory === 'All' && !activeCategoryRecord) return [];
+    const seen = new Set<string>();
+    const list: string[] = [];
+
+    if (activeCategoryRecord?.subcategories) {
+      activeCategoryRecord.subcategories.forEach((sub) => {
+        const clean = sub.trim();
+        const key = normalizeCategoryKey(clean);
+        if (clean && !seen.has(key)) {
+          seen.add(key);
+          list.push(clean);
+        }
+      });
+    }
+
+    categoryScopedProducts.forEach((p) => {
+      const clean = (p.subcategory || '').trim();
+      const key = normalizeCategoryKey(clean);
+      if (clean && !seen.has(key)) {
+        seen.add(key);
+        list.push(clean);
+      }
+    });
+
+    return list;
+  }, [selectedCategory, activeCategoryRecord, categoryScopedProducts]);
+
+  // Sizes and colors auto-update based on available products in the active category
+  const availableSizes = useMemo(() => {
+    const source = categoryScopedProducts.length > 0 ? categoryScopedProducts : modeFilteredProducts;
+    const set = new Set<string>();
+    source.forEach((p) => p.sizes.forEach((s) => s && set.add(s)));
+    return Array.from(set);
+  }, [categoryScopedProducts, modeFilteredProducts]);
+
+  const availableColors = useMemo(() => {
+    const source = categoryScopedProducts.length > 0 ? categoryScopedProducts : modeFilteredProducts;
+    const set = new Set<string>();
+    source.forEach((p) => p.colors.forEach((c) => c.name && set.add(c.name)));
+    return Array.from(set);
+  }, [categoryScopedProducts, modeFilteredProducts]);
+
+  const sliderMax = useMemo(() => {
+    const highest = products.reduce((max, p) => Math.max(max, p.price), 0);
+    return Math.max(10000, Math.ceil(highest / 500) * 500);
+  }, [products]);
+
+  const effectiveMaxPrice = maxPrice ?? sliderMax;
+
+  const filtered = useMemo(() => {
+    const q = searchText.trim().toLowerCase();
+
+    const list = categoryScopedProducts.filter((p) => {
       if (
         selectedSubcategory !== 'All' &&
-        (p.subcategory || '').toLowerCase() !== selectedSubcategory.toLowerCase()
+        !productMatchesSubcategory(p, selectedSubcategory)
       ) {
         return false;
       }
@@ -207,6 +267,7 @@ export const ShopPage: React.FC<ShopPageProps> = ({ mode = 'all' }) => {
         const hay = [
           p.name,
           p.category,
+          ...(p.additionalCategories || []),
           p.subcategory || '',
           p.sku,
           p.shortDescription || '',
@@ -236,10 +297,7 @@ export const ShopPage: React.FC<ShopPageProps> = ({ mode = 'all' }) => {
       }
     });
   }, [
-    products,
-    mode,
-    selectedCategory,
-    activeCategoryRecord,
+    categoryScopedProducts,
     selectedSubcategory,
     selectedSize,
     selectedColor,
@@ -261,36 +319,161 @@ export const ShopPage: React.FC<ShopPageProps> = ({ mode = 'all' }) => {
     setMinRating(0);
     setDiscountOnly(false);
     setSearchText('');
-    setSearchParams({});
+    if (categorySlug) {
+      navigate('/shop');
+    } else {
+      setSearchParams({});
+    }
   };
 
-  const copy = MODE_COPY[mode];
+  const baseCopy = MODE_COPY[mode];
+  const isAllCategoryView = selectedCategory === 'All' && !categorySlug;
+
+  // Dynamic SEO title, description, and heading for category pages vs mode pages
+  const activeHeading = useMemo(() => {
+    if (activeCategoryRecord) {
+      return {
+        eyebrow: mode === 'all' ? "Men's Fashion Category" : `${baseCopy.title} · Men's Category`,
+        title: activeCategoryRecord.name,
+        desc:
+          activeCategoryRecord.description ||
+          `Explore premium men’s ${activeCategoryRecord.name.toLowerCase()} from PYTHOX WORLD.`,
+      };
+    }
+    if (categorySlug) {
+      const readableSlug = categorySlug
+        .replace(/-/g, ' ')
+        .replace(/\b\w/g, (ch) => ch.toUpperCase());
+      return {
+        eyebrow: "Men's Fashion Category",
+        title: readableSlug,
+        desc: `Curated men’s ${readableSlug.toLowerCase()} engineered for architectural fit and daily utility.`,
+      };
+    }
+    return baseCopy;
+  }, [activeCategoryRecord, categorySlug, mode, baseCopy]);
+
+  const seoTitle = activeCategoryRecord
+    ? `${activeCategoryRecord.name} — Men's Fashion | PYTHOX WORLD`
+    : `${activeHeading.title} — PYTHOX WORLD`;
+
+  const categoryJsonLd = useMemo(() => {
+    if (typeof window === 'undefined') return undefined;
+    const origin = window.location.origin;
+    if (!activeCategoryRecord) return undefined;
+
+    return {
+      '@context': 'https://schema.org',
+      '@graph': [
+        {
+          '@type': 'CollectionPage',
+          name: `${activeCategoryRecord.name} — PYTHOX WORLD Men's Fashion`,
+          description: activeCategoryRecord.description,
+          url: `${origin}/category/${activeCategoryRecord.slug}`,
+          numberOfItems: filtered.length,
+        },
+        {
+          '@type': 'BreadcrumbList',
+          itemListElement: [
+            {
+              '@type': 'ListItem',
+              position: 1,
+              name: 'Home',
+              item: `${origin}/`,
+            },
+            {
+              '@type': 'ListItem',
+              position: 2,
+              name: 'Shop',
+              item: `${origin}/shop`,
+            },
+            {
+              '@type': 'ListItem',
+              position: 3,
+              name: activeCategoryRecord.name,
+              item: `${origin}/category/${activeCategoryRecord.slug}`,
+            },
+          ],
+        },
+      ],
+    };
+  }, [activeCategoryRecord, filtered.length]);
+
+  const isCategorySelected = (cat: Category) => {
+    if (activeCategoryRecord) return activeCategoryRecord.id === cat.id;
+    return (
+      normalizeCategoryKey(selectedCategory) === normalizeCategoryKey(cat.name) ||
+      normalizeCategoryKey(selectedCategory) === normalizeCategoryKey(cat.slug)
+    );
+  };
 
   const filterPanel = (
     <div className="space-y-6 text-sm">
       {/* Category */}
       <div>
-        <h3 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#5C5C5C] mb-3">
-          Category
-        </h3>
-        <div className="flex flex-wrap gap-2">
-          {categoryOptions.map((cat) => (
-            <button
-              key={cat}
-              type="button"
-              onClick={() => {
-                setSelectedCategory(cat);
-                setSelectedSubcategory('All');
-              }}
-              className={`chip-btn ${
-                selectedCategory.toLowerCase() === cat.toLowerCase()
-                  ? 'chip-btn-active'
-                  : ''
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#5C5C5C]">
+            Men&apos;s Categories
+          </h3>
+          <span className="font-mono text-[10px] text-[#5C5C5C] tabular-nums">
+            {sortedCategories.length}
+          </span>
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <button
+            type="button"
+            onClick={() => {
+              selectCategory('All');
+              setMobileFiltersOpen(false);
+            }}
+            className={`flex items-center justify-between rounded-[10px] px-3 py-2 text-left text-xs font-medium transition-colors cursor-pointer ${
+              isAllCategoryView
+                ? 'bg-[#0A0A0A] text-white font-semibold'
+                : 'bg-white border border-[#D4D3CE] text-[#0A0A0A] hover:border-[#0A0A0A]'
+            }`}
+          >
+            <span>All Products</span>
+            <span
+              className={`font-mono text-[11px] tabular-nums ${
+                isAllCategoryView ? 'text-white/75' : 'text-[#5C5C5C]'
               }`}
             >
-              {cat}
-            </button>
-          ))}
+              {modeFilteredProducts.length}
+            </span>
+          </button>
+
+          {sortedCategories.map((cat) => {
+            const active = isCategorySelected(cat);
+            const catCount = countProductsInCategory(
+              modeFilteredProducts,
+              cat,
+              sortedCategories
+            );
+            return (
+              <button
+                key={cat.id}
+                type="button"
+                onClick={() => {
+                  selectCategory(cat);
+                  setMobileFiltersOpen(false);
+                }}
+                className={`flex items-center justify-between rounded-[10px] px-3 py-2 text-left text-xs font-medium transition-colors cursor-pointer ${
+                  active
+                    ? 'bg-[#0A0A0A] text-white font-semibold'
+                    : 'bg-white border border-[#D4D3CE] text-[#0A0A0A] hover:border-[#0A0A0A]'
+                }`}
+              >
+                <span className="truncate pr-2">{cat.name}</span>
+                <span
+                  className={`font-mono text-[11px] tabular-nums shrink-0 ${
+                    active ? 'text-white/75' : 'text-[#5C5C5C]'
+                  }`}
+                >
+                  {catCount}
+                </span>
+              </button>
+            );
+          })}
         </div>
       </div>
 
@@ -301,20 +484,40 @@ export const ShopPage: React.FC<ShopPageProps> = ({ mode = 'all' }) => {
             Subcategory
           </h3>
           <div className="flex flex-wrap gap-2">
-            {['All', ...subcategoryOptions].map((sub) => (
-              <button
-                key={sub}
-                type="button"
-                onClick={() => setSelectedSubcategory(sub)}
-                className={`chip-btn ${
-                  selectedSubcategory.toLowerCase() === sub.toLowerCase()
-                    ? 'chip-btn-active'
-                    : ''
-                }`}
-              >
-                {sub}
-              </button>
-            ))}
+            <button
+              type="button"
+              onClick={() => selectSubcategory('All')}
+              className={`chip-btn ${
+                selectedSubcategory === 'All' ? 'chip-btn-active' : ''
+              }`}
+            >
+              All
+            </button>
+            {subcategoryOptions.map((sub) => {
+              const subCount = countProductsInSubcategory(
+                categoryScopedProducts,
+                activeCategoryRecord,
+                sub,
+                sortedCategories
+              );
+              const active =
+                normalizeCategoryKey(selectedSubcategory) === normalizeCategoryKey(sub);
+              return (
+                <button
+                  key={sub}
+                  type="button"
+                  onClick={() => selectSubcategory(sub)}
+                  className={`chip-btn ${active ? 'chip-btn-active' : ''}`}
+                >
+                  <span>{sub}</span>
+                  {subCount > 0 && (
+                    <span className="ml-1 font-mono text-[10px] opacity-70 tabular-nums">
+                      ({subCount})
+                    </span>
+                  )}
+                </button>
+              );
+            })}
           </div>
         </div>
       )}
@@ -441,18 +644,53 @@ export const ShopPage: React.FC<ShopPageProps> = ({ mode = 'all' }) => {
 
   return (
     <main className="mx-auto max-w-[1440px] px-4 sm:px-6 lg:px-10 py-6 sm:py-8 lg:py-12">
-      <SeoHead title={`${copy.title} — PYTHOX WORLD`} description={copy.desc} />
+      <SeoHead
+        title={seoTitle}
+        description={activeHeading.desc}
+        image={activeCategoryRecord?.image}
+        jsonLd={categoryJsonLd}
+      />
+
+      {/* Category Breadcrumb (visible when browsing a specific Men's category) */}
+      {(activeCategoryRecord || categorySlug) && (
+        <nav
+          aria-label="Category Breadcrumb"
+          className="mb-4 font-mono text-[11px] uppercase tracking-[0.16em] text-[#5C5C5C] flex flex-wrap items-center gap-2"
+        >
+          <Link to="/" className="hover:text-[#0A0A0A]">
+            Home
+          </Link>
+          <span>/</span>
+          <Link to="/shop" className="hover:text-[#0A0A0A]">
+            Shop All Menswear
+          </Link>
+          <span>/</span>
+          <span className="text-[#0A0A0A] font-semibold">
+            {activeHeading.title}
+          </span>
+          {selectedSubcategory !== 'All' && (
+            <>
+              <span>/</span>
+              <span className="text-[#0A0A0A] font-semibold">
+                {selectedSubcategory}
+              </span>
+            </>
+          )}
+        </nav>
+      )}
 
       {/* Page Heading & Search */}
       <div className="border-b border-[#D9D9D9] pb-6 sm:pb-7 flex flex-col lg:flex-row lg:items-end justify-between gap-5">
         <div>
           <p className="text-[11px] font-mono font-semibold uppercase tracking-[0.2em] text-[#5C5C5C]">
-            {copy.eyebrow}
+            {activeHeading.eyebrow}
           </p>
           <h1 className="mt-1.5 text-3xl sm:text-4xl font-editorial font-semibold text-[#0A0A0A]">
-            {copy.title}
+            {activeHeading.title}
           </h1>
-          <p className="mt-2 text-sm text-[#292929] max-w-xl">{copy.desc}</p>
+          <p className="mt-2 text-sm text-[#292929] max-w-xl">
+            {activeHeading.desc}
+          </p>
         </div>
 
         <div className="flex flex-col sm:flex-row sm:items-center gap-2.5 w-full lg:w-auto">
@@ -492,6 +730,139 @@ export const ShopPage: React.FC<ShopPageProps> = ({ mode = 'all' }) => {
         </div>
       </div>
 
+      {/* Monochrome Premium Men's Category Navigation Strip (Horizontal Scroll on Mobile) */}
+      <div className="border-b border-[#D9D9D9] py-4 space-y-3">
+        <div className="flex items-center justify-between gap-3">
+          <nav
+            aria-label="Men's Product Categories"
+            className="flex-1 min-w-0 flex items-center gap-2 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          >
+            <button
+              type="button"
+              onClick={() => selectCategory('All')}
+              className={`shrink-0 inline-flex items-center gap-1.5 rounded-[10px] px-3.5 py-2 text-xs font-medium transition-colors cursor-pointer whitespace-nowrap border ${
+                isAllCategoryView
+                  ? 'bg-[#0A0A0A] text-white border-[#0A0A0A]'
+                  : 'bg-white text-[#0A0A0A] border-[#D4D3CE] hover:border-[#0A0A0A]'
+              }`}
+            >
+              <span>All Products</span>
+              <span
+                className={`font-mono text-[10.5px] tabular-nums ${
+                  isAllCategoryView ? 'text-white/75' : 'text-[#5C5C5C]'
+                }`}
+              >
+                ({modeFilteredProducts.length})
+              </span>
+            </button>
+
+            {sortedCategories.map((cat) => {
+              const active = isCategorySelected(cat);
+              const count = countProductsInCategory(
+                modeFilteredProducts,
+                cat,
+                sortedCategories
+              );
+              return (
+                <button
+                  key={cat.id}
+                  type="button"
+                  onClick={() => selectCategory(cat)}
+                  className={`shrink-0 inline-flex items-center gap-1.5 rounded-[10px] px-3.5 py-2 text-xs font-medium transition-colors cursor-pointer whitespace-nowrap border ${
+                    active
+                      ? 'bg-[#0A0A0A] text-white border-[#0A0A0A]'
+                      : 'bg-white text-[#0A0A0A] border-[#D4D3CE] hover:border-[#0A0A0A]'
+                  }`}
+                >
+                  <span>{cat.name}</span>
+                  <span
+                    className={`font-mono text-[10.5px] tabular-nums ${
+                      active ? 'text-white/75' : 'text-[#5C5C5C]'
+                    }`}
+                  >
+                    ({count})
+                  </span>
+                </button>
+              );
+            })}
+          </nav>
+
+          {/* Compact Mobile Quick-Category Dropdown */}
+          <div className="sm:hidden shrink-0">
+            <select
+              aria-label="Quick category selector"
+              value={activeCategoryRecord?.slug || 'All'}
+              onChange={(e) => {
+                const val = e.target.value;
+                if (val === 'All') {
+                  selectCategory('All');
+                } else {
+                  const found = sortedCategories.find((c) => c.slug === val);
+                  if (found) selectCategory(found);
+                }
+              }}
+              className="max-w-[138px] min-h-[36px] rounded-[10px] border border-[#D4D3CE] bg-white px-2.5 py-1.5 text-[11px] font-medium text-[#0A0A0A] focus:border-[#0A0A0A] focus:outline-none"
+            >
+              <option value="All">All ({modeFilteredProducts.length})</option>
+              {sortedCategories.map((cat) => (
+                <option key={cat.id} value={cat.slug}>
+                  {cat.name} (
+                  {countProductsInCategory(
+                    modeFilteredProducts,
+                    cat,
+                    sortedCategories
+                  )}
+                  )
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        {/* Dynamic Subcategory Filter Strip for Active Category */}
+        {subcategoryOptions.length > 0 && (
+          <div className="flex items-center gap-2 overflow-x-auto pb-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            <span className="shrink-0 font-mono text-[10px] uppercase tracking-[0.16em] text-[#5C5C5C] pr-1">
+              Type:
+            </span>
+            <button
+              type="button"
+              onClick={() => selectSubcategory('All')}
+              className={`shrink-0 chip-btn ${
+                selectedSubcategory === 'All' ? 'chip-btn-active' : ''
+              }`}
+            >
+              All {activeCategoryRecord?.name || ''}
+            </button>
+            {subcategoryOptions.map((sub) => {
+              const subCount = countProductsInSubcategory(
+                categoryScopedProducts,
+                activeCategoryRecord,
+                sub,
+                sortedCategories
+              );
+              const active =
+                normalizeCategoryKey(selectedSubcategory) === normalizeCategoryKey(sub);
+              return (
+                <button
+                  key={sub}
+                  type="button"
+                  onClick={() => selectSubcategory(sub)}
+                  className={`shrink-0 chip-btn ${active ? 'chip-btn-active' : ''}`}
+                >
+                  <span>{sub}</span>
+                  {subCount > 0 && (
+                    <span className="ml-1 font-mono text-[10px] opacity-70 tabular-nums">
+                      ({subCount})
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
       {/* Main Content */}
       <div className="mt-7 sm:mt-8 grid grid-cols-1 lg:grid-cols-12 gap-8">
         <aside className="hidden lg:block lg:col-span-3 border-r border-[#D9D9D9] pr-6">
@@ -502,11 +873,16 @@ export const ShopPage: React.FC<ShopPageProps> = ({ mode = 'all' }) => {
           <div className="mb-5 flex items-center justify-between text-xs text-[#5C5C5C]">
             <span className="font-mono tabular-nums">
               {filtered.length} {filtered.length === 1 ? 'product' : 'products'}
+              {activeCategoryRecord ? ` in ${activeCategoryRecord.name}` : ''}
+              {selectedSubcategory !== 'All' ? ` · ${selectedSubcategory}` : ''}
             </span>
             {(selectedCategory !== 'All' ||
               selectedSubcategory !== 'All' ||
               selectedSize !== 'All' ||
               selectedColor !== 'All' ||
+              inStockOnly ||
+              discountOnly ||
+              minRating > 0 ||
               searchText) && (
               <button
                 type="button"
@@ -519,25 +895,45 @@ export const ShopPage: React.FC<ShopPageProps> = ({ mode = 'all' }) => {
           </div>
 
           {filtered.length === 0 ? (
-            <div className="rounded-3xl border border-[#D9D9D9] bg-[#EAE9E4] p-10 sm:p-12 text-center space-y-3">
-              <p className="text-lg font-editorial font-medium text-[#0A0A0A]">
+            <div className="rounded-3xl border border-[#D9D9D9] bg-[#EAE9E4] p-8 sm:p-12 text-center space-y-4">
+              <p className="font-mono text-[10.5px] uppercase tracking-[0.2em] text-[#5C5C5C]">
+                {activeCategoryRecord
+                  ? activeCategoryRecord.name
+                  : "Men's Catalog"}
+              </p>
+              <p className="text-xl font-editorial font-medium text-[#0A0A0A]">
                 {products.length === 0
                   ? 'No products available at the moment.'
-                  : 'No matching pieces found'}
+                  : activeCategoryRecord && categoryScopedProducts.length === 0
+                  ? `New ${activeCategoryRecord.name} pieces arriving soon.`
+                  : 'No matching pieces found.'}
               </p>
-              {products.length === 0 ? (
-                <p className="text-xs text-[#5C5C5C]">
-                  Products published from the Admin Panel will appear here automatically.
-                </p>
-              ) : (
+              <p className="text-xs text-[#5C5C5C] max-w-md mx-auto leading-relaxed">
+                {products.length === 0
+                  ? 'Published menswear items from the Admin Console will appear here automatically.'
+                  : activeCategoryRecord && categoryScopedProducts.length === 0
+                  ? activeCategoryRecord.description
+                  : 'Try clearing a subcategory, size, or price filter to explore more silhouettes.'}
+              </p>
+
+              <div className="flex flex-wrap items-center justify-center gap-2.5 pt-1">
+                {selectedSubcategory !== 'All' && categoryScopedProducts.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => selectSubcategory('All')}
+                    className="btn-base btn-primary"
+                  >
+                    View All {activeCategoryRecord?.name || 'Items'}
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={resetFilters}
-                  className="btn-base btn-primary mt-2"
+                  className="btn-base btn-secondary"
                 >
-                  Reset Filters
+                  Browse All Men&apos;s Products
                 </button>
-              )}
+              </div>
             </div>
           ) : (
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3.5 sm:gap-5 lg:gap-6">
@@ -556,7 +952,10 @@ export const ShopPage: React.FC<ShopPageProps> = ({ mode = 'all' }) => {
       {/* Mobile Filters Drawer */}
       {mobileFiltersOpen && (
         <div className="fixed inset-0 z-50 lg:hidden flex">
-          <div className="fixed inset-0 bg-[#0A0A0A]/55 backdrop-enter" onClick={() => setMobileFiltersOpen(false)} />
+          <div
+            className="fixed inset-0 bg-[#0A0A0A]/55 backdrop-enter"
+            onClick={() => setMobileFiltersOpen(false)}
+          />
           <div className="relative z-10 w-[88%] max-w-xs bg-[#F3F2EE] h-full flex flex-col modal-enter shadow-2xl">
             <div className="flex items-center justify-between border-b border-[#D9D9D9] bg-white px-5 py-3.5">
               <span className="text-xs font-semibold uppercase tracking-[0.14em] text-[#0A0A0A]">

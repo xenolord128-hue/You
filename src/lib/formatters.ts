@@ -65,8 +65,19 @@ export function sanitizeExternalHref(raw?: string | null, fallback = ''): string
 export function sanitizeMediaUrl(raw?: string | null, fallback = ''): string {
   const value = (raw || '').trim();
   if (!value) return fallback;
-  if (value.startsWith('/uploads/') || value.startsWith('/assets/')) {
-    return value;
+  if (
+    /[<>"]/.test(value) ||
+    /%3C|%3E|%22/i.test(value) ||
+    /^https?:\/\/ibb\.co\.com\/JwC1M9WR\/?$/i.test(value)
+  ) {
+    return fallback;
+  }
+  if (
+    value.startsWith('/uploads/') ||
+    value.startsWith('/assets/') ||
+    value.startsWith('/src/assets/')
+  ) {
+    return value.includes('..') ? fallback : value;
   }
   if (/^data:image\/(png|jpe?g|webp|gif|avif);base64,[a-zA-Z0-9+/=]+$/i.test(value)) {
     return value;

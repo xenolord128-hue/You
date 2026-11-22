@@ -19,7 +19,7 @@ export const BrandLogo: React.FC<BrandLogoProps> = ({
   if (zoomOnly) {
     return (
       <span
-        className={`inline-flex items-center justify-center shrink-0 overflow-hidden rounded-[10px] ${className}`}
+        className={`inline-flex items-center justify-center shrink-0 overflow-hidden rounded-[12px] bg-white p-[3px] border border-white/90 shadow-[0_4px_14px_rgba(0,0,0,0.3)] ring-1 ring-black/15 ${className}`}
       >
         {!failed ? (
           <img
@@ -27,10 +27,10 @@ export const BrandLogo: React.FC<BrandLogoProps> = ({
             alt="PYTHOX WORLD Logo"
             referrerPolicy="no-referrer"
             onError={() => setFailed(true)}
-            className="h-full w-full object-cover object-center scale-[1.35] block"
+            className="h-full w-full object-contain object-center rounded-[9px] block"
           />
         ) : (
-          <span className="font-editorial text-xs font-bold tracking-[0.12em] text-[#fbf9f5] whitespace-nowrap">
+          <span className="font-editorial text-xs font-bold tracking-[0.12em] text-[#0A0A0A] whitespace-nowrap">
             PW
           </span>
         )}

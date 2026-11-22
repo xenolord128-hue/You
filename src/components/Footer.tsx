@@ -17,14 +17,19 @@ export const Footer: React.FC = () => {
       showToast('Please enter a valid email address.');
       return;
     }
+    if (!subscribed) {
+      trackPixelEvent('CompleteRegistration', {
+        content_name: 'VIP Club Registration',
+        status: true,
+      });
+    }
     setSubscribed(true);
     setEmail('');
-    trackPixelEvent('Lead', { content_name: 'Footer VIP Club' });
     showToast('Welcome to the PYTHOX WORLD VIP Club.');
   };
 
   const cleanWa = settings.whatsappNumber.replace(/\D/g, '');
-  const waHref = `https://wa.me/${cleanWa || '8801XXXXXXXXX'}`;
+  const waHref = `https://wa.me/${cleanWa || '8801887602095'}`;
 
   return (
     <footer className="bg-[#0A0A0A] text-[#F5F5F5] border-t border-[#292929]">
@@ -70,7 +75,7 @@ export const Footer: React.FC = () => {
                 <Instagram className="h-3.5 w-3.5" /> Instagram
               </a>
               <a
-                href={sanitizeExternalHref(settings.facebookUrl, 'https://facebook.com/pythoxworld')}
+                href={sanitizeExternalHref(settings.facebookUrl, 'https://www.facebook.com/share/1A8c2wEDBX/')}
                 target="_blank"
                 rel="noreferrer"
                 className="btn-base btn-dark-ghost btn-sm"
@@ -81,6 +86,11 @@ export const Footer: React.FC = () => {
                 href={waHref}
                 target="_blank"
                 rel="noreferrer"
+                onClick={() =>
+                  trackPixelEvent('Contact', {
+                    content_name: 'Footer WhatsApp Concierge',
+                  })
+                }
                 className="btn-base btn-dark-ghost btn-sm"
               >
                 <MessageCircle className="h-3.5 w-3.5" /> WhatsApp
@@ -141,7 +151,15 @@ export const Footer: React.FC = () => {
                 <span className="h-8 w-8 rounded-lg bg-[#161616] border border-[#292929] flex items-center justify-center shrink-0 text-white">
                   <Mail className="h-4 w-4" />
                 </span>
-                <a href={`mailto:${settings.supportEmail}`} className="hover:text-white transition-colors truncate">
+                <a
+                  href={`mailto:${settings.supportEmail}`}
+                  onClick={() =>
+                    trackPixelEvent('Contact', {
+                      content_name: 'Footer Email Concierge',
+                    })
+                  }
+                  className="hover:text-white transition-colors truncate"
+                >
                   {settings.supportEmail}
                 </a>
               </li>
@@ -153,9 +171,14 @@ export const Footer: React.FC = () => {
                   href={waHref}
                   target="_blank"
                   rel="noreferrer"
+                  onClick={() =>
+                    trackPixelEvent('Contact', {
+                      content_name: 'Footer Phone Concierge',
+                    })
+                  }
                   className="font-mono hover:text-white transition-colors"
                 >
-                  +{settings.whatsappNumber}
+                  {settings.supportPhone || `+${cleanWa || '8801887602095'}`}
                 </a>
               </li>
             </ul>

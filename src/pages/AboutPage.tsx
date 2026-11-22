@@ -110,7 +110,7 @@ export const AboutPage: React.FC = () => {
                 <ArrowRight className="h-3.5 w-3.5" />
               </Link>
               <Link
-                to="/shop?winter=true"
+                to="/winter-collection"
                 className="btn-base btn-secondary btn-lg"
               >
                 Winter Collection

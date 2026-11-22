@@ -3,18 +3,19 @@ import { AnimatePresence, motion } from 'motion/react';
 import { Facebook, Headphones, MessageCircle, X } from 'lucide-react';
 import { useStore } from '../context/StoreContext';
 import { sanitizeExternalHref } from '../lib/formatters';
+import { trackPixelEvent } from '../lib/metaPixel';
 
 export const FloatingContact: React.FC = () => {
   const { settings } = useStore();
   const [expanded, setExpanded] = useState(false);
 
   const cleanWa = settings.whatsappNumber.replace(/\D/g, '');
-  const whatsappUrl = `https://wa.me/${cleanWa || '8801XXXXXXXXX'}?text=${encodeURIComponent(
+  const whatsappUrl = `https://wa.me/${cleanWa || '8801887602095'}?text=${encodeURIComponent(
     'Hello PYTHOX WORLD Concierge, I would like sizing or order assistance.'
   )}`;
   const facebookUrl = sanitizeExternalHref(
     settings.facebookUrl,
-    'https://facebook.com/pythoxworld'
+    'https://www.facebook.com/share/1A8c2wEDBX/'
   );
 
   return (
@@ -32,6 +33,11 @@ export const FloatingContact: React.FC = () => {
               href={whatsappUrl}
               target="_blank"
               rel="noreferrer"
+              onClick={() =>
+                trackPixelEvent('Contact', {
+                  content_name: 'Floating WhatsApp Concierge',
+                })
+              }
               className="btn-base btn-primary btn-sm rounded-xl shadow-lg"
             >
               <MessageCircle className="h-4 w-4" />
@@ -41,6 +47,11 @@ export const FloatingContact: React.FC = () => {
               href={facebookUrl}
               target="_blank"
               rel="noreferrer"
+              onClick={() =>
+                trackPixelEvent('Contact', {
+                  content_name: 'Floating Facebook Support',
+                })
+              }
               className="btn-base btn-secondary btn-sm rounded-xl shadow-lg"
             >
               <Facebook className="h-4 w-4 text-[#0A0A0A]" />

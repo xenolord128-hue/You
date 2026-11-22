@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   BadgeCheck,
@@ -30,6 +30,7 @@ import { ProductQrModal } from '../components/ProductQrModal';
 import { SeoHead } from '../components/SeoHead';
 import { Reveal } from '../components/Motion';
 import { trackPixelEvent } from '../lib/metaPixel';
+import { findCategoryByIdentifier } from '../lib/categoryUtils';
 
 type TabKey = 'description' | 'material' | 'size' | 'care' | 'shipping';
 
@@ -38,6 +39,7 @@ export const ProductDetailPage: React.FC = () => {
   const navigate = useNavigate();
   const {
     products,
+    categories,
     reviews,
     settings,
     t,
@@ -110,8 +112,13 @@ export const ProductDetailPage: React.FC = () => {
     [products, product]
   );
 
+  const lastTrackedProductIdRef = useRef<string | null>(null);
+
   useEffect(() => {
     if (!product) return;
+    if (lastTrackedProductIdRef.current === product.id) return;
+    lastTrackedProductIdRef.current = product.id;
+
     setActiveImageIdx(0);
     setShowingVideo(false);
     setSelectedColor(product.colors[0]?.name || '');
@@ -121,7 +128,15 @@ export const ProductDetailPage: React.FC = () => {
     trackPixelEvent('ViewContent', {
       content_name: product.name,
       content_ids: [product.id],
+      content_category: product.category,
       content_type: 'product',
+      contents: [
+        {
+          id: product.id,
+          quantity: 1,
+          item_price: product.price,
+        },
+      ],
       value: product.price,
       currency: 'BDT',
     });
@@ -160,7 +175,7 @@ export const ProductDetailPage: React.FC = () => {
   const wishlisted = isInWishlist(product.id);
 
   const cleanWa = settings.whatsappNumber.replace(/\D/g, '');
-  const waOrderLink = `https://wa.me/${cleanWa || '8801XXXXXXXXX'}?text=${encodeURIComponent(
+  const waOrderLink = `https://wa.me/${cleanWa || '8801887602095'}?text=${encodeURIComponent(
     `Hello PYTHOX WORLD, I would like to order:\nProduct: ${product.name} (${product.sku})\nColour: ${selectedColor}\nSize: ${selectedSize}\nQuantity: ${quantity}\nPrice: ${formatBDT(
       product.price * quantity
     )}`
@@ -238,16 +253,30 @@ export const ProductDetailPage: React.FC = () => {
       <SeoHead
         title={`${product.name} — PYTHOX WORLD`}
         description={product.description}
+        ogType="product"
+        image={galleryImages[0] || product.primaryImage}
+        productMeta={{
+          priceAmount: product.price,
+          currency: 'BDT',
+          availability: variantQty > 0 ? 'in stock' : 'out of stock',
+          brand: 'PYTHOX WORLD',
+          category: product.category,
+          sku: product.sku,
+          condition: 'new',
+        }}
         jsonLd={{
           '@context': 'https://schema.org',
           '@type': 'Product',
           name: product.name,
+          url: `${window.location.origin}/product/${product.slug}`,
+          image: galleryImages.length > 0 ? galleryImages : [product.primaryImage].filter(Boolean),
           sku: product.sku,
           category: product.category,
           description: product.description,
           brand: { '@type': 'Brand', name: 'PYTHOX WORLD' },
           offers: {
             '@type': 'Offer',
+            url: `${window.location.origin}/product/${product.slug}`,
             priceCurrency: 'BDT',
             price: product.price,
             availability:
@@ -259,26 +288,34 @@ export const ProductDetailPage: React.FC = () => {
       />
 
       {/* Breadcrumb */}
-      <nav aria-label="Breadcrumb" className="mb-5 sm:mb-6 font-mono text-[11px] uppercase tracking-wider text-[#5C5C5C] flex flex-wrap items-center gap-2">
-        <Link to="/" className="hover:text-[#0A0A0A] py-0.5">Home</Link>
-        <span>/</span>
-        <Link to={`/shop?category=${encodeURIComponent(product.category)}`} className="hover:text-[#0A0A0A] py-0.5">
-          {product.category}
-        </Link>
-        {product.subcategory && (
-          <>
+      {(() => {
+        const matchedCat = findCategoryByIdentifier(categories, product.category);
+        const catPath = matchedCat
+          ? `/category/${matchedCat.slug}`
+          : `/shop?category=${encodeURIComponent(product.category)}`;
+        const subcatPath = matchedCat
+          ? `/category/${matchedCat.slug}?subcategory=${encodeURIComponent(product.subcategory || '')}`
+          : `/shop?category=${encodeURIComponent(product.category)}&subcategory=${encodeURIComponent(product.subcategory || '')}`;
+        return (
+          <nav aria-label="Breadcrumb" className="mb-5 sm:mb-6 font-mono text-[11px] uppercase tracking-wider text-[#5C5C5C] flex flex-wrap items-center gap-2">
+            <Link to="/" className="hover:text-[#0A0A0A] py-0.5">Home</Link>
             <span>/</span>
-            <Link
-              to={`/shop?category=${encodeURIComponent(product.category)}&subcategory=${encodeURIComponent(product.subcategory)}`}
-              className="hover:text-[#0A0A0A] py-0.5"
-            >
-              {product.subcategory}
+            <Link to={catPath} className="hover:text-[#0A0A0A] py-0.5">
+              {matchedCat?.name || product.category}
             </Link>
-          </>
-        )}
-        <span>/</span>
-        <span className="text-[#0A0A0A] font-semibold truncate">{product.name}</span>
-      </nav>
+            {product.subcategory && (
+              <>
+                <span>/</span>
+                <Link to={subcatPath} className="hover:text-[#0A0A0A] py-0.5">
+                  {product.subcategory}
+                </Link>
+              </>
+            )}
+            <span>/</span>
+            <span className="text-[#0A0A0A] font-semibold truncate">{product.name}</span>
+          </nav>
+        );
+      })()}
 
       {/* Main 12-Col Split Layout */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-10 items-start">
@@ -565,6 +602,15 @@ export const ProductDetailPage: React.FC = () => {
                 href={waOrderLink}
                 target="_blank"
                 rel="noreferrer"
+                onClick={() =>
+                  trackPixelEvent('Contact', {
+                    content_name: product.name,
+                    content_ids: [product.id],
+                    content_category: product.category,
+                    value: product.price * quantity,
+                    currency: 'BDT',
+                  })
+                }
                 className="btn-base btn-secondary w-full"
               >
                 <MessageCircle className="h-4 w-4" />
@@ -671,7 +717,7 @@ export const ProductDetailPage: React.FC = () => {
             {activeTab === 'description' && (
               <>
                 <p className="whitespace-pre-line">{product.description}</p>
-                {product.features.length > 0 && (
+                {Array.isArray(product.features) && product.features.length > 0 && (
                   <ul className="space-y-1.5 pt-2">
                     {product.features.map((f) => (
                       <li key={f} className="flex items-center gap-2 text-[#0A0A0A] font-medium">

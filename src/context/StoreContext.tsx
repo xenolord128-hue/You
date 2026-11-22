@@ -35,9 +35,21 @@ import {
   DEFAULT_CATEGORIES,
   DEFAULT_COLLECTIONS,
   DEFAULT_SETTINGS,
+  normalizeCategoryMedia,
+  normalizeCollectionMedia,
+  normalizeProductMedia,
+  sanitizeHeroSettingUrl,
 } from '../config/storeConfig';
 import { sanitizeDocId } from '../lib/formatters';
-import { initMetaPixel, trackPixelEvent } from '../lib/metaPixel';
+import {
+  getSortedCategories,
+  isLegacySeedCategorySet,
+} from '../lib/categoryUtils';
+import {
+  initMetaPixel,
+  trackPixelEvent,
+  trackPurchaseEvent,
+} from '../lib/metaPixel';
 import { AppLanguage, TRANSLATIONS } from '../lib/i18n';
 import {
   auth,
@@ -54,17 +66,24 @@ import {
   fetchAdminProductsCatalog,
   fetchPublicCatalog,
   fetchPublishedProducts,
+  mergeProductsByUpdatedAt,
 } from '../services/productService';
+import { setMediaSessionToken } from '../services/mediaService';
 
 interface StoreContextValue {
   serverConnected: boolean;
+  backendConnected: boolean;
+  isFirebaseAdminLinked: boolean;
   productsLoading: boolean;
   mapsApiKey: string;
   authReady: boolean;
   isAdminAuthenticated: boolean;
+  adminSetupRequired: boolean;
   adminUserEmail: string;
   adminSessionToken: string;
   setAdminSessionToken: (token: string) => void;
+  setupAdminPassword: (password: string) => Promise<void>;
+  loginAdminWithPassword: (password: string) => Promise<void>;
   signInAdmin: () => Promise<User>;
   signOutAdminUser: () => Promise<void>;
   refreshProducts: () => Promise<void>;
@@ -129,6 +148,8 @@ interface StoreContextValue {
   deleteProduct: (productId: string) => Promise<void>;
   upsertCategory: (cat: Category) => Promise<void>;
   deleteCategory: (categoryId: string) => Promise<void>;
+  reorderCategories: (orderedCategories: Category[]) => Promise<void>;
+  restoreDefaultCategories: () => Promise<void>;
   upsertCollection: (col: Collection) => Promise<void>;
   upsertCoupon: (coupon: Coupon) => Promise<void>;
   deleteCoupon: (couponId: string) => Promise<void>;
@@ -177,6 +198,16 @@ function clampProductForFirestore(product: Product): Product {
     shortDescription: product.shortDescription?.trim().slice(0, 500),
     description: product.description.trim().slice(0, 5000),
     category: product.category.trim().slice(0, 100),
+    additionalCategories:
+      product.additionalCategories && product.additionalCategories.length > 0
+        ? Array.from(
+            new Set(
+              product.additionalCategories
+                .map((c) => String(c).trim().slice(0, 100))
+                .filter((c) => c && c.toLowerCase() !== product.category.trim().toLowerCase())
+            )
+          ).slice(0, 20)
+        : undefined,
     subcategory: product.subcategory?.trim().slice(0, 100),
     collection: (product.collection || '').trim().slice(0, 100),
     price: Math.max(1, Number(product.price) || 1),
@@ -269,20 +300,49 @@ function clampSettingsForFirestore(nextSettings: StoreSettings): StoreSettings {
     instagramUrl: (nextSettings.instagramUrl || '').slice(0, 500),
     metaPixelId: (nextSettings.metaPixelId || '').slice(0, 40),
     announcementText: (nextSettings.announcementText || '').slice(0, 300),
-    heroImageUrl: (nextSettings.heroImageUrl || '').slice(0, 2000),
+    heroImageUrl: sanitizeHeroSettingUrl(nextSettings.heroImageUrl).slice(0, 2000),
+    mobileHeroImageUrl: sanitizeHeroSettingUrl(nextSettings.mobileHeroImageUrl).slice(0, 2000),
   });
+}
+
+function mergeStoreSettings(raw?: Partial<StoreSettings> | null): StoreSettings {
+  if (!raw) return DEFAULT_SETTINGS;
+  const merged = {
+    ...DEFAULT_SETTINGS,
+    ...raw,
+    heroImageUrl: sanitizeHeroSettingUrl(raw.heroImageUrl),
+    mobileHeroImageUrl: sanitizeHeroSettingUrl(raw.mobileHeroImageUrl),
+  };
+  if (raw.supportPhone === '+880 1700-000000' || !raw.supportPhone?.trim()) {
+    merged.supportPhone = DEFAULT_SETTINGS.supportPhone;
+  }
+  if (raw.whatsappNumber === '8801700000000' || !raw.whatsappNumber?.trim()) {
+    merged.whatsappNumber = DEFAULT_SETTINGS.whatsappNumber;
+  }
+  if (raw.facebookUrl === 'https://facebook.com/pythoxworld' || !raw.facebookUrl?.trim()) {
+    merged.facebookUrl = DEFAULT_SETTINGS.facebookUrl;
+  }
+  if (!raw.supportEmail?.trim()) {
+    merged.supportEmail = DEFAULT_SETTINGS.supportEmail;
+  }
+  return merged;
 }
 
 export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
   children,
 }) => {
   const [serverConnected, setServerConnected] = useState(false);
-  const [authReady, setAuthReady] = useState(false);
+  const [firebaseAuthReady, setFirebaseAuthReady] = useState(false);
+  const [sessionCheckReady, setSessionCheckReady] = useState(false);
   const [adminUser, setAdminUser] = useState<User | null>(null);
+  const [passwordAdminAuthed, setPasswordAdminAuthed] = useState(false);
+  const [adminSetupRequired, setAdminSetupRequired] = useState(false);
   const [adminSessionToken, setAdminSessionToken] = useState<string>('');
   const [mapsApiKey, setMapsApiKey] = useState<string>(
     (import.meta as any).env?.VITE_GOOGLE_MAPS_API_KEY || ''
   );
+
+  const authReady = firebaseAuthReady && sessionCheckReady;
 
   const [allProducts, setAllProducts] = useState<Product[]>([]);
   const [productsLoading, setProductsLoading] = useState<boolean>(true);
@@ -290,9 +350,33 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     () => allProducts.filter((p) => p.status === 'Published'),
     [allProducts]
   );
-  const isAdminAuthenticated = useMemo(() => isVerifiedAdminUser(adminUser), [adminUser]);
-  const adminUserEmail = adminUser?.email || '';
+  const isAdminAuthenticated = useMemo(
+    () => Boolean(passwordAdminAuthed),
+    [passwordAdminAuthed]
+  );
+  const isFirebaseAdminLinked = useMemo(
+    () => isVerifiedAdminUser(adminUser),
+    [adminUser]
+  );
+  const [backendConnected, setBackendConnected] = useState(false);
+  const adminUserEmail =
+    passwordAdminAuthed ? (adminUser?.email || 'Administrator Session') : '';
   const adminLoadedRef = useRef(false);
+  const backendAvailableRef = useRef(false);
+  const apiProductsRef = useRef<Product[]>([]);
+  const fsProductsRef = useRef<Product[]>([]);
+  const deletedProductIdsRef = useRef<Set<string>>(new Set());
+  const apiCategoriesLoadedRef = useRef(false);
+  const apiSettingsRef = useRef<Partial<StoreSettings> | undefined>(undefined);
+  const productsRef = useRef<Product[]>([]);
+
+  useEffect(() => {
+    productsRef.current = products;
+  }, [products]);
+
+  useEffect(() => {
+    setMediaSessionToken(adminSessionToken);
+  }, [adminSessionToken]);
 
   const [categories, setCategories] = useState<Category[]>(DEFAULT_CATEGORIES);
   const [collections, setCollections] = useState<Collection[]>(DEFAULT_COLLECTIONS);
@@ -347,32 +431,113 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     return () => clearTimeout(timer);
   }, [toast]);
 
-  // Monitor Firebase Auth state
+  // Helper to perform authenticated admin API calls with session cookie + in-memory header
+  const adminApiCall = useCallback(
+    async <T = Record<string, unknown>>(
+      url: string,
+      method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
+      body?: unknown,
+      tokenOverride?: string
+    ): Promise<T | null> => {
+      const token = tokenOverride ?? adminSessionToken;
+      const res = await fetch(url, {
+        method,
+        credentials: 'include',
+        cache: 'no-store',
+        headers: {
+          ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+          ...(token ? { 'X-Admin-Session': token } : {}),
+        },
+        ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+      });
+      const ct = (res.headers.get('content-type') || '').toLowerCase();
+      if (!ct.includes('application/json')) {
+        return null;
+      }
+      const data = (await res.json()) as T & { error?: string };
+      if (!res.ok) {
+        if (res.status === 401) {
+          setPasswordAdminAuthed(false);
+          setAdminSessionToken('');
+          adminLoadedRef.current = false;
+        }
+        throw new Error(data?.error || `Request failed with status ${res.status}`);
+      }
+      backendAvailableRef.current = true;
+      return data;
+    },
+    [adminSessionToken]
+  );
+
+  // Monitor Server-Side Cookie/Header Session on mount
   useEffect(() => {
+    let active = true;
+    fetch('/api/admin/session', {
+      method: 'GET',
+      credentials: 'include',
+      cache: 'no-store',
+    })
+      .then(async (r) => {
+        const ct = (r.headers.get('content-type') || '').toLowerCase();
+        if (!ct.includes('application/json')) return null;
+        return (await r.json()) as {
+          authenticated?: boolean;
+          setupRequired?: boolean;
+          sessionToken?: string;
+        };
+      })
+      .then((data) => {
+        if (!active) return;
+        if (data) {
+          backendAvailableRef.current = true;
+          setBackendConnected(true);
+          setAdminSetupRequired(Boolean(data.setupRequired));
+          if (data.authenticated) {
+            setPasswordAdminAuthed(true);
+            if (data.sessionToken) {
+              setAdminSessionToken(data.sessionToken);
+            }
+          }
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (active) setSessionCheckReady(true);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  // Monitor optional Firebase Auth state (non-blocking for password session)
+  useEffect(() => {
+    const fallbackTimer = window.setTimeout(() => {
+      setFirebaseAuthReady(true);
+    }, 2500);
+
     const unsub = onAuthStateChanged(auth, async (user) => {
+      window.clearTimeout(fallbackTimer);
       setAdminUser(user);
       if (user && isVerifiedAdminUser(user)) {
         try {
           const tok = await user.getIdToken();
-          setAdminSessionToken(tok);
+          setAdminSessionToken((prev) => prev || tok);
         } catch {
-          setAdminSessionToken('');
+          // ignore token lookup error
         }
-      } else {
-        setAdminSessionToken('');
-        adminLoadedRef.current = false;
       }
-      setAuthReady(true);
+      setFirebaseAuthReady(true);
     });
-    return () => unsub();
+    return () => {
+      window.clearTimeout(fallbackTimer);
+      unsub();
+    };
   }, []);
 
-  // Initialize Meta Pixel whenever configured in store settings
+  // Initialize or disable Meta Pixel whenever configured in store settings
   useEffect(() => {
-    if (settings.metaPixelId) {
-      initMetaPixel(settings.metaPixelId);
-      trackPixelEvent('PageView');
-    }
+    initMetaPixel(settings.metaPixelId);
   }, [settings.metaPixelId]);
 
   useEffect(() => {
@@ -406,10 +571,24 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     if (adminLoadedRef.current) return;
     setProductsLoading(true);
     try {
-      const published = await fetchPublishedProducts();
-      if (!adminLoadedRef.current) {
-        setAllProducts(published);
-        setServerConnected(true);
+      const data = await fetchPublicCatalog();
+      if (data && !adminLoadedRef.current) {
+        const normalizedProds = data.products.map(normalizeProductMedia);
+        apiProductsRef.current = normalizedProds;
+        setAllProducts(normalizedProds);
+        setServerConnected(data.connected);
+        if (data.backendAvailable) setBackendConnected(true);
+        if (data.settings) {
+          apiSettingsRef.current = data.settings;
+          setSettings(mergeStoreSettings(data.settings));
+        }
+      } else {
+        const published = (await fetchPublishedProducts()).map(normalizeProductMedia);
+        if (!adminLoadedRef.current) {
+          apiProductsRef.current = published;
+          setAllProducts(published);
+          setServerConnected(true);
+        }
       }
     } catch {
       // Preserve state without injecting placeholder products
@@ -418,7 +597,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   }, []);
 
-  // Initial Firestore connectivity & public catalog load + real-time listeners
+  // Initial Backend + Firestore catalog load & real-time Firestore listeners
   useEffect(() => {
     let active = true;
     setProductsLoading(true);
@@ -430,17 +609,25 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     fetchPublicCatalog()
       .then((data) => {
         if (!active || !data) return;
+        backendAvailableRef.current = data.backendAvailable;
+        if (data.backendAvailable) setBackendConnected(true);
         setServerConnected(Boolean(data.connected));
         if (!adminLoadedRef.current) {
-          setAllProducts(data.products);
+          const normalizedProds = data.products.map(normalizeProductMedia);
+          apiProductsRef.current = normalizedProds;
+          setAllProducts(normalizedProds);
         }
-        if (Array.isArray(data.categories)) {
-          setCategories(
-            [...data.categories].sort((a, b) => a.display_order - b.display_order)
-          );
+        if (Array.isArray(data.categories) && data.categories.length > 0) {
+          const nextCats = (
+            isLegacySeedCategorySet(data.categories)
+              ? DEFAULT_CATEGORIES
+              : getSortedCategories(data.categories)
+          ).map(normalizeCategoryMedia);
+          apiCategoriesLoadedRef.current = true;
+          setCategories(nextCats);
         }
-        if (Array.isArray(data.collections)) {
-          setCollections(data.collections);
+        if (Array.isArray(data.collections) && data.collections.length > 0) {
+          setCollections(data.collections.map(normalizeCollectionMedia));
         }
         if (Array.isArray(data.coupons)) {
           setCoupons(data.coupons);
@@ -449,16 +636,13 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           setReviews(data.reviews);
         }
         if (data.settings) {
-          setSettings({
-            ...DEFAULT_SETTINGS,
-            ...data.settings,
-          });
+          apiSettingsRef.current = data.settings;
+          setSettings(mergeStoreSettings(data.settings));
         }
       })
       .catch(() => {
         if (!active) return;
-        setServerConnected(false);
-        if (!adminLoadedRef.current) {
+        if (!adminLoadedRef.current && apiProductsRef.current.length === 0) {
           setAllProducts([]);
         }
       })
@@ -466,18 +650,24 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         if (active) setProductsLoading(false);
       });
 
-    // Live public listeners (strictly filtered for Published products)
+    // Live public Firestore listeners (never wipe backend API records)
     const unsubProducts = onSnapshot(
       query(collection(db, 'products'), where('status', '==', 'Published')),
       (snap) => {
+        fsProductsRef.current = snap.docs.map((d) =>
+          normalizeProductMedia(d.data() as Product)
+        );
         if (!adminLoadedRef.current) {
-          setAllProducts(snap.docs.map((d) => d.data() as Product));
+          const filteredFs = fsProductsRef.current.filter(
+            (p) => !deletedProductIdsRef.current.has(p.id)
+          );
+          setAllProducts(mergeProductsByUpdatedAt(apiProductsRef.current, filteredFs));
           setProductsLoading(false);
           setServerConnected(true);
         }
       },
-      (error) => {
-        handleFirestoreError(error, OperationType.LIST, 'products');
+      () => {
+        // Non-fatal if Firestore rules/network unavailable; backend catalog handles reads
       }
     );
 
@@ -485,55 +675,63 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       collection(db, 'categories'),
       (snap) => {
         if (snap.docs.length > 0) {
-          const list = snap.docs
-            .map((d) => d.data() as Category)
-            .sort((a, b) => a.display_order - b.display_order);
-          setCategories(list);
+          const rawList = snap.docs.map((d) => d.data() as Category);
+          if (isLegacySeedCategorySet(rawList)) {
+            if (!apiCategoriesLoadedRef.current) {
+              setCategories(DEFAULT_CATEGORIES.map(normalizeCategoryMedia));
+            }
+            return;
+          }
+          setCategories(getSortedCategories(rawList).map(normalizeCategoryMedia));
+        } else if (!apiCategoriesLoadedRef.current) {
+          setCategories(DEFAULT_CATEGORIES.map(normalizeCategoryMedia));
         }
       },
-      (error) => {
-        handleFirestoreError(error, OperationType.LIST, 'categories');
-      }
+      () => {}
     );
 
     const unsubCollections = onSnapshot(
       collection(db, 'collections'),
       (snap) => {
         if (snap.docs.length > 0) {
-          setCollections(snap.docs.map((d) => d.data() as Collection));
+          setCollections(
+            snap.docs.map((d) => normalizeCollectionMedia(d.data() as Collection))
+          );
         }
       },
-      (error) => {
-        handleFirestoreError(error, OperationType.LIST, 'collections');
-      }
+      () => {}
     );
 
     const unsubSettings = onSnapshot(
       doc(db, 'settings', 'store_config'),
       (snap) => {
         if (snap.exists()) {
-          setSettings({
-            ...DEFAULT_SETTINGS,
-            ...(snap.data() as Partial<StoreSettings>),
-          });
+          const fsSet = snap.data() as Partial<StoreSettings>;
+          setSettings(
+            mergeStoreSettings({
+              ...fsSet,
+              ...(apiSettingsRef.current || {}),
+            })
+          );
         }
       },
-      (error) => {
-        handleFirestoreError(error, OperationType.GET, 'settings/store_config');
-      }
+      () => {}
     );
 
     const unsubReviews = onSnapshot(
       collection(db, 'reviews'),
       (snap) => {
-        const list = snap.docs
-          .map((d) => d.data() as Review)
-          .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-        setReviews(list);
+        const fsList = snap.docs.map((d) => d.data() as Review);
+        setReviews((prev) => {
+          const map = new Map<string, Review>();
+          prev.forEach((r) => map.set(r.id, r));
+          fsList.forEach((r) => map.set(r.id, r));
+          return Array.from(map.values()).sort(
+            (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+          );
+        });
       },
-      (error) => {
-        handleFirestoreError(error, OperationType.LIST, 'reviews');
-      }
+      () => {}
     );
 
     return () => {
@@ -546,51 +744,118 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     };
   }, []);
 
-  // Attach full Admin listeners ONLY when authenticated as verified Admin
+  const refreshAdminData = useCallback(
+    async (tokenOverride?: string) => {
+      const effectiveToken = tokenOverride ?? adminSessionToken;
+      if (!isAdminAuthenticated && !effectiveToken) return;
+      try {
+        const data = await fetchAdminProductsCatalog(effectiveToken);
+        adminLoadedRef.current = true;
+        if (data.backendAvailable) {
+          backendAvailableRef.current = true;
+          setBackendConnected(true);
+        }
+        if (Array.isArray(data.products)) {
+          const normalizedProds = data.products.map(normalizeProductMedia);
+          apiProductsRef.current = normalizedProds;
+          setAllProducts(normalizedProds);
+        }
+        if (Array.isArray(data.categories) && data.categories.length > 0) {
+          apiCategoriesLoadedRef.current = true;
+          setCategories(
+            (isLegacySeedCategorySet(data.categories)
+              ? DEFAULT_CATEGORIES
+              : getSortedCategories(data.categories)
+            ).map(normalizeCategoryMedia)
+          );
+        }
+        if (Array.isArray(data.collections) && data.collections.length > 0) {
+          setCollections(data.collections.map(normalizeCollectionMedia));
+        }
+        if (Array.isArray(data.orders)) {
+          const sorted = [...data.orders].sort(
+            (a, b) =>
+              new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+          );
+          setOrders(sorted);
+          try {
+            localStorage.setItem(LOCAL_ORDERS_KEY, JSON.stringify(sorted));
+          } catch {
+            // ignore
+          }
+        }
+        if (Array.isArray(data.coupons)) {
+          setCoupons(data.coupons);
+        }
+        if (Array.isArray(data.reviews)) {
+          setReviews(data.reviews);
+        }
+        setServerConnected(true);
+      } catch (err) {
+        console.warn('Unable to refresh admin catalog:', err);
+      }
+    },
+    [isAdminAuthenticated, adminSessionToken]
+  );
+
+  // Load full Admin catalog + orders whenever authenticated via password or Google
   useEffect(() => {
     if (!authReady || !isAdminAuthenticated) return;
+    void refreshAdminData();
+
+    if (!isVerifiedAdminUser(adminUser)) return;
 
     const unsubAllProducts = onSnapshot(
       collection(db, 'products'),
       (snap) => {
+        fsProductsRef.current = snap.docs.map((d) =>
+          normalizeProductMedia(d.data() as Product)
+        );
         adminLoadedRef.current = true;
-        setAllProducts(snap.docs.map((d) => d.data() as Product));
+        const filteredFs = fsProductsRef.current.filter(
+          (p) => !deletedProductIdsRef.current.has(p.id)
+        );
+        setAllProducts(mergeProductsByUpdatedAt(apiProductsRef.current, filteredFs));
         setServerConnected(true);
       },
-      (error) => {
-        handleFirestoreError(error, OperationType.LIST, 'products');
-      }
+      () => {}
     );
 
     const unsubOrders = onSnapshot(
       collection(db, 'orders'),
       (snap) => {
-        const sorted = snap.docs
-          .map((d) => d.data() as Order)
-          .sort(
+        const fsOrders = snap.docs.map((d) => d.data() as Order);
+        setOrders((prev) => {
+          const map = new Map<string, Order>();
+          fsOrders.forEach((o) => map.set(o.id, o));
+          prev.forEach((o) => map.set(o.id, o));
+          const sorted = Array.from(map.values()).sort(
             (a, b) =>
               new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
           );
-        setOrders(sorted);
-        try {
-          localStorage.setItem(LOCAL_ORDERS_KEY, JSON.stringify(sorted));
-        } catch {
-          // ignore storage errors
-        }
+          try {
+            localStorage.setItem(LOCAL_ORDERS_KEY, JSON.stringify(sorted));
+          } catch {
+            // ignore
+          }
+          return sorted;
+        });
       },
-      (error) => {
-        handleFirestoreError(error, OperationType.LIST, 'orders');
-      }
+      () => {}
     );
 
     const unsubCoupons = onSnapshot(
       collection(db, 'coupons'),
       (snap) => {
-        setCoupons(snap.docs.map((d) => d.data() as Coupon));
+        const fsCoupons = snap.docs.map((d) => d.data() as Coupon);
+        setCoupons((prev) => {
+          const map = new Map<string, Coupon>();
+          fsCoupons.forEach((c) => map.set(c.id, c));
+          prev.forEach((c) => map.set(c.id, c));
+          return Array.from(map.values());
+        });
       },
-      (error) => {
-        handleFirestoreError(error, OperationType.LIST, 'coupons');
-      }
+      () => {}
     );
 
     return () => {
@@ -598,60 +863,99 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       unsubOrders();
       unsubCoupons();
     };
-  }, [authReady, isAdminAuthenticated]);
+  }, [authReady, isAdminAuthenticated, adminUser, refreshAdminData]);
 
-  const refreshAdminData = useCallback(async () => {
-    if (!isAdminAuthenticated) return;
-    try {
-      const data = await fetchAdminProductsCatalog();
-      adminLoadedRef.current = true;
-      if (Array.isArray(data.products)) {
-        setAllProducts(data.products);
+  const setupAdminPassword = useCallback(
+    async (password: string) => {
+      const res = await fetch('/api/admin/setup-password', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password }),
+      });
+      const ct = (res.headers.get('content-type') || '').toLowerCase();
+      if (!ct.includes('application/json')) {
+        throw new Error('Authentication server is unavailable.');
       }
-      if (Array.isArray(data.categories)) {
-        setCategories(
-          [...data.categories].sort((a, b) => a.display_order - b.display_order)
-        );
+      const data = (await res.json()) as {
+        authenticated?: boolean;
+        setupRequired?: boolean;
+        sessionToken?: string;
+        error?: string;
+      };
+      if (!res.ok || !data.authenticated) {
+        if (data.setupRequired === false) setAdminSetupRequired(false);
+        throw new Error(data.error || 'Unable to set administrator password.');
       }
-      if (Array.isArray(data.collections)) {
-        setCollections(data.collections);
+      const tok = data.sessionToken || '';
+      setAdminSetupRequired(false);
+      setPasswordAdminAuthed(true);
+      setAdminSessionToken(tok);
+      setMediaSessionToken(tok);
+      await refreshAdminData(tok);
+    },
+    [refreshAdminData]
+  );
+
+  const loginAdminWithPassword = useCallback(
+    async (password: string) => {
+      const res = await fetch('/api/admin/login', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password }),
+      });
+      const ct = (res.headers.get('content-type') || '').toLowerCase();
+      if (!ct.includes('application/json')) {
+        throw new Error('Authentication server is unavailable.');
       }
-      if (Array.isArray(data.orders)) {
-        const sorted = [...data.orders].sort(
-          (a, b) =>
-            new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-        );
-        setOrders(sorted);
-        localStorage.setItem(LOCAL_ORDERS_KEY, JSON.stringify(sorted));
+      const data = (await res.json()) as {
+        authenticated?: boolean;
+        setupRequired?: boolean;
+        sessionToken?: string;
+        error?: string;
+      };
+      if (!res.ok || !data.authenticated) {
+        if (data.setupRequired) setAdminSetupRequired(true);
+        throw new Error(data.error || 'Invalid administrator password.');
       }
-      if (Array.isArray(data.coupons)) {
-        setCoupons(data.coupons);
-      }
-      if (Array.isArray(data.reviews)) {
-        setReviews(data.reviews);
-      }
-      setServerConnected(true);
-    } catch (err) {
-      console.warn('Unable to refresh admin catalog:', err);
-    }
-  }, [isAdminAuthenticated]);
+      const tok = data.sessionToken || '';
+      setAdminSetupRequired(false);
+      setPasswordAdminAuthed(true);
+      setAdminSessionToken(tok);
+      setMediaSessionToken(tok);
+      await refreshAdminData(tok);
+    },
+    [refreshAdminData]
+  );
 
   const signInAdmin = useCallback(async () => {
     const user = await signInAdminWithGoogle();
     setAdminUser(user);
     const tok = await user.getIdToken();
     setAdminSessionToken(tok);
-    await refreshAdminData();
+    await refreshAdminData(tok);
     return user;
   }, [refreshAdminData]);
 
   const signOutAdminUser = useCallback(async () => {
-    await signOutAdmin();
+    try {
+      await fetch('/api/admin/logout', {
+        method: 'POST',
+        credentials: 'include',
+        headers: adminSessionToken ? { 'X-Admin-Session': adminSessionToken } : undefined,
+      });
+    } catch {
+      // ignore network error during logout
+    }
+    await signOutAdmin().catch(() => {});
+    setPasswordAdminAuthed(false);
     setAdminUser(null);
     setAdminSessionToken('');
+    setMediaSessionToken('');
     adminLoadedRef.current = false;
     await refreshProducts();
-  }, [refreshProducts]);
+  }, [adminSessionToken, refreshProducts]);
 
   const addToCart = useCallback(
     (
@@ -685,7 +989,16 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       trackPixelEvent('AddToCart', {
         content_name: product.name,
         content_ids: [product.id],
+        content_category: product.category,
         content_type: 'product',
+        contents: [
+          {
+            id: product.id,
+            quantity: qty,
+            item_price: product.price,
+          },
+        ],
+        num_items: qty,
         value: product.price * qty,
         currency: 'BDT',
       });
@@ -837,17 +1150,47 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         createdAt: newOrder.createdAt,
       });
 
+      let savedOrder: Order = newOrder;
+      let backendSaved = false;
+
       try {
-        const batch = writeBatch(db);
-        batch.set(doc(db, 'orders', newOrder.id), newOrder);
-        batch.set(doc(db, 'order_tracking', trackingId), trackingPayload);
-        await batch.commit();
+        const res = await fetch('/api/orders', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(newOrder),
+        });
+        const ct = (res.headers.get('content-type') || '').toLowerCase();
+        if (ct.includes('application/json')) {
+          const data = (await res.json()) as { order?: Order; error?: string };
+          if (!res.ok) {
+            throw new Error(data.error || 'Unable to submit order.');
+          }
+          if (data.order) {
+            savedOrder = data.order;
+            backendSaved = true;
+          }
+        }
       } catch (err) {
-        handleFirestoreError(err, OperationType.CREATE, `orders/${newOrder.id}`);
+        if (backendAvailableRef.current) {
+          throw err instanceof Error ? err : new Error('Unable to submit order.');
+        }
+      }
+
+      if (!backendSaved || isVerifiedAdminUser(auth.currentUser)) {
+        try {
+          const batch = writeBatch(db);
+          batch.set(doc(db, 'orders', savedOrder.id), savedOrder);
+          batch.set(doc(db, 'order_tracking', trackingId), trackingPayload);
+          await batch.commit();
+        } catch (err) {
+          if (!backendSaved) {
+            handleFirestoreError(err, OperationType.CREATE, `orders/${savedOrder.id}`);
+          }
+        }
       }
 
       setOrders((prev) => {
-        const next = [newOrder, ...prev.filter((o) => o.id !== newOrder.id)];
+        const next = [savedOrder, ...prev.filter((o) => o.id !== savedOrder.id)];
         try {
           localStorage.setItem(LOCAL_ORDERS_KEY, JSON.stringify(next));
         } catch {
@@ -856,15 +1199,16 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         return next;
       });
 
-      trackPixelEvent('Purchase', {
-        value: newOrder.total,
-        currency: 'BDT',
-        content_ids: newOrder.items.map((i) => i.productId),
-        num_items: newOrder.items.reduce((s, i) => s + i.quantity, 0),
-      });
+      const categoryByProductId = new Map<string, string>();
+      for (const prod of productsRef.current) {
+        if (prod.id && prod.category) {
+          categoryByProductId.set(prod.id, prod.category);
+        }
+      }
+      trackPurchaseEvent(savedOrder, categoryByProductId);
 
       clearCart();
-      return newOrder;
+      return savedOrder;
     },
     [clearCart]
   );
@@ -887,6 +1231,22 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
   const fetchTrackedOrder = useCallback(
     async (orderNumber: string, phone: string): Promise<Order | null> => {
       const localMatch = trackOrder(orderNumber, phone);
+      try {
+        const res = await fetch(
+          `/api/orders/track?orderNumber=${encodeURIComponent(orderNumber)}&phone=${encodeURIComponent(
+            phone
+          )}`,
+          { cache: 'no-store' }
+        );
+        const ct = (res.headers.get('content-type') || '').toLowerCase();
+        if (res.ok && ct.includes('application/json')) {
+          const data = (await res.json()) as { order?: Order };
+          if (data.order) return data.order;
+        }
+      } catch {
+        // Fallback to Firestore
+      }
+
       const trackingId = buildTrackingDocId(orderNumber, phone);
       if (!trackingId) return localMatch;
 
@@ -952,7 +1312,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       authorName?: string;
     }) => {
       const reviewId = sanitizeDocId(`rev-${Date.now()}-${Math.floor(10 + Math.random() * 89)}`);
-      const review: Review = cleanFirestorePayload<Review>({
+      let review: Review = cleanFirestorePayload<Review>({
         id: reviewId,
         productId: sanitizeDocId(input.productId),
         productName: input.productName?.trim().slice(0, 200),
@@ -962,10 +1322,31 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         comment: input.comment.trim().slice(0, 1000),
         createdAt: new Date().toISOString(),
       });
+      let backendSaved = false;
       try {
-        await setDoc(doc(db, 'reviews', review.id), review);
-      } catch (err) {
-        handleFirestoreError(err, OperationType.CREATE, `reviews/${review.id}`);
+        const res = await fetch('/api/reviews', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(input),
+        });
+        const ct = (res.headers.get('content-type') || '').toLowerCase();
+        if (res.ok && ct.includes('application/json')) {
+          const data = (await res.json()) as { review?: Review };
+          if (data.review) {
+            review = data.review;
+            backendSaved = true;
+          }
+        }
+      } catch {
+        // fallback below
+      }
+
+      if (!backendSaved) {
+        try {
+          await setDoc(doc(db, 'reviews', review.id), review);
+        } catch (err) {
+          handleFirestoreError(err, OperationType.CREATE, `reviews/${review.id}`);
+        }
       }
       setReviews((prev) => [review, ...prev.filter((r) => r.id !== review.id)]);
       showToast('Review published');
@@ -975,14 +1356,35 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const upsertProduct = useCallback(
     async (product: Product): Promise<Product> => {
-      const cleanProduct = clampProductForFirestore(product);
+      let cleanProduct = clampProductForFirestore(product);
       const exists = allProducts.some((p) => p.id === cleanProduct.id);
 
-      try {
-        await setDoc(doc(db, 'products', cleanProduct.id), cleanProduct);
-      } catch (err) {
-        handleFirestoreError(err, OperationType.WRITE, `products/${cleanProduct.id}`);
+      const apiRes = await adminApiCall<{ ok?: boolean; product?: Product }>(
+        '/api/admin/products',
+        'POST',
+        { product: cleanProduct }
+      );
+
+      if (apiRes?.product) {
+        cleanProduct = clampProductForFirestore(apiRes.product);
       }
+
+      if (isVerifiedAdminUser(auth.currentUser)) {
+        try {
+          await setDoc(doc(db, 'products', cleanProduct.id), cleanProduct);
+        } catch (err) {
+          if (!apiRes) {
+            handleFirestoreError(err, OperationType.WRITE, `products/${cleanProduct.id}`);
+          }
+        }
+      } else if (!apiRes) {
+        throw new Error('Administrator session expired. Please unlock the Admin Panel again.');
+      }
+
+      deletedProductIdsRef.current.delete(cleanProduct.id);
+      apiProductsRef.current = apiProductsRef.current.some((p) => p.id === cleanProduct.id)
+        ? apiProductsRef.current.map((p) => (p.id === cleanProduct.id ? cleanProduct : p))
+        : [cleanProduct, ...apiProductsRef.current];
 
       setAllProducts((prev) => {
         const prevExists = prev.some((p) => p.id === cleanProduct.id);
@@ -1006,7 +1408,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       }
       return cleanProduct;
     },
-    [allProducts, showToast]
+    [allProducts, adminApiCall, showToast]
   );
 
   const duplicateProduct = useCallback(
@@ -1031,25 +1433,49 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
   const deleteProduct = useCallback(
     async (productId: string) => {
       const cleanId = sanitizeDocId(productId);
-      try {
-        await deleteDoc(doc(db, 'products', cleanId));
-      } catch (err) {
-        handleFirestoreError(err, OperationType.DELETE, `products/${cleanId}`);
+      const apiRes = await adminApiCall<{ ok?: boolean }>(
+        `/api/admin/products/${encodeURIComponent(cleanId)}`,
+        'DELETE'
+      );
+      if (isVerifiedAdminUser(auth.currentUser)) {
+        try {
+          await deleteDoc(doc(db, 'products', cleanId));
+        } catch (err) {
+          if (!apiRes) {
+            handleFirestoreError(err, OperationType.DELETE, `products/${cleanId}`);
+          }
+        }
+      } else if (!apiRes) {
+        throw new Error('Administrator session expired. Please log in again.');
       }
+      deletedProductIdsRef.current.add(cleanId);
+      apiProductsRef.current = apiProductsRef.current.filter((p) => p.id !== cleanId);
       setAllProducts((prev) => prev.filter((p) => p.id !== cleanId));
       showToast('Product permanently deleted');
     },
-    [showToast]
+    [adminApiCall, showToast]
   );
 
   const upsertCategory = useCallback(
     async (cat: Category) => {
       const cleanCat = clampCategoryForFirestore(cat);
-      try {
-        await setDoc(doc(db, 'categories', cleanCat.id), cleanCat);
-      } catch (err) {
-        handleFirestoreError(err, OperationType.WRITE, `categories/${cleanCat.id}`);
+      const apiRes = await adminApiCall<{ ok?: boolean; categories?: Category[] }>(
+        '/api/admin/categories',
+        'POST',
+        { category: cleanCat, allCategories: categories }
+      );
+      if (isVerifiedAdminUser(auth.currentUser)) {
+        try {
+          await setDoc(doc(db, 'categories', cleanCat.id), cleanCat);
+        } catch (err) {
+          if (!apiRes) {
+            handleFirestoreError(err, OperationType.WRITE, `categories/${cleanCat.id}`);
+          }
+        }
+      } else if (!apiRes) {
+        throw new Error('Administrator session expired. Please log in again.');
       }
+      apiCategoriesLoadedRef.current = true;
       setCategories((prev) => {
         const nextList = prev.some((c) => c.id === cleanCat.id)
           ? prev.map((c) => (c.id === cleanCat.id ? cleanCat : c))
@@ -1058,30 +1484,118 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       });
       showToast('Category saved');
     },
-    [showToast]
+    [adminApiCall, categories, showToast]
   );
 
   const deleteCategory = useCallback(
     async (categoryId: string) => {
       const cleanId = sanitizeDocId(categoryId);
-      try {
-        await deleteDoc(doc(db, 'categories', cleanId));
-      } catch (err) {
-        handleFirestoreError(err, OperationType.DELETE, `categories/${cleanId}`);
+      const apiRes = await adminApiCall<{ ok?: boolean }>(
+        `/api/admin/categories/${encodeURIComponent(cleanId)}`,
+        'DELETE',
+        { allCategories: categories }
+      );
+      if (isVerifiedAdminUser(auth.currentUser)) {
+        try {
+          await deleteDoc(doc(db, 'categories', cleanId));
+        } catch (err) {
+          if (!apiRes) {
+            handleFirestoreError(err, OperationType.DELETE, `categories/${cleanId}`);
+          }
+        }
+      } else if (!apiRes) {
+        throw new Error('Administrator session expired. Please log in again.');
       }
       setCategories((prev) => prev.filter((c) => c.id !== cleanId));
       showToast('Category deleted');
     },
-    [showToast]
+    [adminApiCall, categories, showToast]
   );
+
+  const reorderCategories = useCallback(
+    async (orderedCategories: Category[]) => {
+      const updated = orderedCategories.map((cat, idx) =>
+        clampCategoryForFirestore({
+          ...cat,
+          display_order: idx + 1,
+        })
+      );
+      const apiRes = await adminApiCall<{ ok?: boolean }>(
+        '/api/admin/categories/batch',
+        'PUT',
+        { categories: updated }
+      );
+      if (isVerifiedAdminUser(auth.currentUser)) {
+        try {
+          const batch = writeBatch(db);
+          updated.forEach((cat) => {
+            batch.set(doc(db, 'categories', cat.id), cat);
+          });
+          await batch.commit();
+        } catch (err) {
+          if (!apiRes) {
+            handleFirestoreError(err, OperationType.WRITE, 'categories/reorder');
+          }
+        }
+      } else if (!apiRes) {
+        throw new Error('Administrator session expired. Please log in again.');
+      }
+      apiCategoriesLoadedRef.current = true;
+      setCategories(updated);
+      showToast('Category order updated');
+    },
+    [adminApiCall, showToast]
+  );
+
+  const restoreDefaultCategories = useCallback(async () => {
+    const legacyIds = ['cat-tees', 'cat-outerwear', 'cat-shirts-bottoms', 'cat-footwear-acc'];
+    const defaults = DEFAULT_CATEGORIES.map((cat) => clampCategoryForFirestore(cat));
+    const apiRes = await adminApiCall<{ ok?: boolean }>(
+      '/api/admin/categories/batch',
+      'PUT',
+      { categories: defaults }
+    );
+    if (isVerifiedAdminUser(auth.currentUser)) {
+      try {
+        const batch = writeBatch(db);
+        legacyIds.forEach((oldId) => {
+          batch.delete(doc(db, 'categories', oldId));
+        });
+        defaults.forEach((cat) => {
+          batch.set(doc(db, 'categories', cat.id), cat);
+        });
+        await batch.commit();
+      } catch (err) {
+        if (!apiRes) {
+          handleFirestoreError(err, OperationType.WRITE, 'categories/restoreDefaults');
+        }
+      }
+    } else if (!apiRes) {
+      throw new Error('Administrator session expired. Please log in again.');
+    }
+    apiCategoriesLoadedRef.current = true;
+    setCategories(defaults);
+    showToast("Default Men's Fashion categories restored");
+  }, [adminApiCall, showToast]);
 
   const upsertCollection = useCallback(
     async (col: Collection) => {
       const cleanCol = clampCollectionForFirestore(col);
-      try {
-        await setDoc(doc(db, 'collections', cleanCol.id), cleanCol);
-      } catch (err) {
-        handleFirestoreError(err, OperationType.WRITE, `collections/${cleanCol.id}`);
+      const apiRes = await adminApiCall<{ ok?: boolean }>(
+        '/api/admin/collections',
+        'POST',
+        { collection: cleanCol, allCollections: collections }
+      );
+      if (isVerifiedAdminUser(auth.currentUser)) {
+        try {
+          await setDoc(doc(db, 'collections', cleanCol.id), cleanCol);
+        } catch (err) {
+          if (!apiRes) {
+            handleFirestoreError(err, OperationType.WRITE, `collections/${cleanCol.id}`);
+          }
+        }
+      } else if (!apiRes) {
+        throw new Error('Administrator session expired. Please log in again.');
       }
       setCollections((prev) =>
         prev.some((c) => c.id === cleanCol.id)
@@ -1090,16 +1604,27 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       );
       showToast('Collection updated');
     },
-    [showToast]
+    [adminApiCall, collections, showToast]
   );
 
   const upsertCoupon = useCallback(
     async (coupon: Coupon) => {
       const payload = clampCouponForFirestore(coupon);
-      try {
-        await setDoc(doc(db, 'coupons', payload.id), payload);
-      } catch (err) {
-        handleFirestoreError(err, OperationType.WRITE, `coupons/${payload.id}`);
+      const apiRes = await adminApiCall<{ ok?: boolean }>(
+        '/api/admin/coupons',
+        'POST',
+        { coupon: payload, allCoupons: coupons }
+      );
+      if (isVerifiedAdminUser(auth.currentUser)) {
+        try {
+          await setDoc(doc(db, 'coupons', payload.id), payload);
+        } catch (err) {
+          if (!apiRes) {
+            handleFirestoreError(err, OperationType.WRITE, `coupons/${payload.id}`);
+          }
+        }
+      } else if (!apiRes) {
+        throw new Error('Administrator session expired. Please log in again.');
       }
       setCoupons((prev) =>
         prev.some((c) => c.id === payload.id)
@@ -1108,21 +1633,31 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       );
       showToast('Coupon saved');
     },
-    [showToast]
+    [adminApiCall, coupons, showToast]
   );
 
   const deleteCoupon = useCallback(
     async (couponId: string) => {
       const cleanId = sanitizeDocId(couponId);
-      try {
-        await deleteDoc(doc(db, 'coupons', cleanId));
-      } catch (err) {
-        handleFirestoreError(err, OperationType.DELETE, `coupons/${cleanId}`);
+      const apiRes = await adminApiCall<{ ok?: boolean }>(
+        `/api/admin/coupons/${encodeURIComponent(cleanId)}`,
+        'DELETE'
+      );
+      if (isVerifiedAdminUser(auth.currentUser)) {
+        try {
+          await deleteDoc(doc(db, 'coupons', cleanId));
+        } catch (err) {
+          if (!apiRes) {
+            handleFirestoreError(err, OperationType.DELETE, `coupons/${cleanId}`);
+          }
+        }
+      } else if (!apiRes) {
+        throw new Error('Administrator session expired. Please log in again.');
       }
       setCoupons((prev) => prev.filter((c) => c.id !== cleanId));
       showToast('Coupon removed');
     },
-    [showToast]
+    [adminApiCall, showToast]
   );
 
   const updateOrderDetails = useCallback(
@@ -1139,6 +1674,12 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         ...patch,
         updatedAt: new Date().toISOString(),
       });
+
+      const apiRes = await adminApiCall<{ ok?: boolean }>(
+        `/api/admin/orders/${encodeURIComponent(cleanId)}`,
+        'PATCH',
+        patch
+      );
 
       const trackingId = buildTrackingDocId(
         updatedOrder.orderNumber,
@@ -1161,13 +1702,19 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         createdAt: updatedOrder.createdAt,
       });
 
-      try {
-        const batch = writeBatch(db);
-        batch.set(doc(db, 'orders', cleanId), updatedOrder);
-        batch.set(doc(db, 'order_tracking', trackingId), trackingPayload);
-        await batch.commit();
-      } catch (err) {
-        handleFirestoreError(err, OperationType.UPDATE, `orders/${cleanId}`);
+      if (isVerifiedAdminUser(auth.currentUser)) {
+        try {
+          const batch = writeBatch(db);
+          batch.set(doc(db, 'orders', cleanId), updatedOrder);
+          batch.set(doc(db, 'order_tracking', trackingId), trackingPayload);
+          await batch.commit();
+        } catch (err) {
+          if (!apiRes) {
+            handleFirestoreError(err, OperationType.UPDATE, `orders/${cleanId}`);
+          }
+        }
+      } else if (!apiRes) {
+        throw new Error('Administrator session expired. Please log in again.');
       }
 
       setOrders((prev) => {
@@ -1175,13 +1722,13 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         try {
           localStorage.setItem(LOCAL_ORDERS_KEY, JSON.stringify(next));
         } catch {
-          // ignore
+          // ignore storage
         }
         return next;
       });
       showToast('Order updated');
     },
-    [orders, showToast]
+    [adminApiCall, orders, showToast]
   );
 
   const updateOrderStatus = useCallback(
@@ -1198,52 +1745,100 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         ...next,
         id: 'store_config',
       });
-      try {
-        await setDoc(doc(db, 'settings', 'store_config'), merged);
-      } catch (err) {
-        handleFirestoreError(err, OperationType.WRITE, 'settings/store_config');
+      const apiRes = await adminApiCall<{ ok?: boolean; settings?: StoreSettings }>(
+        '/api/admin/settings',
+        'PUT',
+        merged
+      );
+      if (isVerifiedAdminUser(auth.currentUser)) {
+        try {
+          await setDoc(doc(db, 'settings', 'store_config'), merged);
+        } catch (err) {
+          if (!apiRes) {
+            handleFirestoreError(err, OperationType.WRITE, 'settings/store_config');
+          }
+        }
+      } else if (!apiRes) {
+        throw new Error('Administrator session expired. Please log in again.');
       }
+      apiSettingsRef.current = merged;
       setSettings(merged);
-      showToast('Store settings saved to Firebase');
+      showToast('Store settings saved');
     },
-    [settings, showToast]
+    [adminApiCall, settings, showToast]
   );
 
   const syncCatalog = useCallback(async () => {
     if (!isAdminAuthenticated) {
-      showToast('Please sign in as Admin to sync catalog to Firebase');
+      showToast('Please unlock the Admin Panel to sync catalog');
       return;
     }
-    try {
-      const batch = writeBatch(db);
-      allProducts.forEach((p) => {
-        const clean = clampProductForFirestore(p);
-        batch.set(doc(db, 'products', clean.id), clean);
-      });
-      categories.forEach((c) => {
-        const clean = clampCategoryForFirestore(c);
-        batch.set(doc(db, 'categories', clean.id), clean);
-      });
-      collections.forEach((c) => {
-        const clean = clampCollectionForFirestore(c);
-        batch.set(doc(db, 'collections', clean.id), clean);
-      });
-      coupons.forEach((c) => {
-        const clean = clampCouponForFirestore(c);
-        batch.set(doc(db, 'coupons', clean.id), clean);
-      });
-      batch.set(
-        doc(db, 'settings', 'store_config'),
-        clampSettingsForFirestore(settings)
-      );
-      await batch.commit();
-      setServerConnected(true);
-      showToast('PYTHOX WORLD catalog synced to Firebase Firestore');
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, 'syncCatalog');
+    const cleanCategories = categories.map(normalizeCategoryMedia);
+    const cleanCollections = collections.map(normalizeCollectionMedia);
+    const cleanSettings = clampSettingsForFirestore(settings);
+
+    const apiRes = await adminApiCall<{ ok?: boolean }>(
+      '/api/admin/sync-catalog',
+      'POST',
+      {
+        categories: cleanCategories,
+        collections: cleanCollections,
+        coupons,
+        settings: cleanSettings,
+      }
+    );
+
+    if (isVerifiedAdminUser(auth.currentUser)) {
+      const legacyCatIds = [
+        'cat-tees',
+        'cat-outerwear',
+        'cat-shirts-bottoms',
+        'cat-footwear-acc',
+      ];
+      try {
+        const batch = writeBatch(db);
+        legacyCatIds.forEach((oldId) => {
+          batch.delete(doc(db, 'categories', oldId));
+        });
+        allProducts.forEach((p) => {
+          const clean = clampProductForFirestore(normalizeProductMedia(p));
+          batch.set(doc(db, 'products', clean.id), clean);
+        });
+        cleanCategories.forEach((c) => {
+          const clean = clampCategoryForFirestore(c);
+          batch.set(doc(db, 'categories', clean.id), clean);
+        });
+        cleanCollections.forEach((c) => {
+          const clean = clampCollectionForFirestore(c);
+          batch.set(doc(db, 'collections', clean.id), clean);
+        });
+        coupons.forEach((c) => {
+          const clean = clampCouponForFirestore(c);
+          batch.set(doc(db, 'coupons', clean.id), clean);
+        });
+        batch.set(doc(db, 'settings', 'store_config'), cleanSettings);
+        await batch.commit();
+      } catch (err) {
+        if (!apiRes) {
+          handleFirestoreError(err, OperationType.WRITE, 'syncCatalog');
+        }
+      }
+    } else if (!apiRes) {
+      throw new Error('Administrator session expired. Please log in again.');
     }
+
+    setCategories(cleanCategories);
+    setCollections(cleanCollections);
+    setSettings(cleanSettings);
+    setServerConnected(true);
+    showToast(
+      isVerifiedAdminUser(auth.currentUser)
+        ? 'PYTHOX WORLD catalog & Firebase Cloud synced'
+        : 'PYTHOX WORLD catalog synced'
+    );
   }, [
     isAdminAuthenticated,
+    adminApiCall,
     allProducts,
     categories,
     collections,
@@ -1256,13 +1851,18 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     <StoreContext.Provider
       value={{
         serverConnected,
+        backendConnected,
+        isFirebaseAdminLinked,
         productsLoading,
         mapsApiKey,
         authReady,
         isAdminAuthenticated,
+        adminSetupRequired,
         adminUserEmail,
         adminSessionToken,
         setAdminSessionToken,
+        setupAdminPassword,
+        loginAdminWithPassword,
         signInAdmin,
         signOutAdminUser,
         refreshProducts,
@@ -1310,6 +1910,8 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         deleteProduct,
         upsertCategory,
         deleteCategory,
+        reorderCategories,
+        restoreDefaultCategories,
         upsertCollection,
         upsertCoupon,
         deleteCoupon,

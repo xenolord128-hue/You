@@ -15,6 +15,7 @@ export interface Product {
   shortDescription?: string;
   description: string;
   category: ProductCategory;
+  additionalCategories?: ProductCategory[];
   subcategory?: string;
   collection: string;
   price: number;
@@ -172,6 +173,7 @@ export interface StoreSettings {
   metaPixelId: string;
   announcementText: string;
   heroImageUrl?: string;
+  mobileHeroImageUrl?: string;
 }
 
 export interface BlogPost {

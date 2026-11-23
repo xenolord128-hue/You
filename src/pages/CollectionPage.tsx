@@ -8,7 +8,7 @@ import { EDITORIAL_MEDIA } from '../config/storeConfig';
 
 export const CollectionPage: React.FC = () => {
   const { slug } = useParams<{ slug: string }>();
-  const { collections, products } = useStore();
+  const { collections, products, productsLoading, productsError, refreshProducts } = useStore();
 
   const currentCollection =
     collections.find((c) => c.slug === slug) || collections[0];
@@ -71,10 +71,37 @@ export const CollectionPage: React.FC = () => {
 
       {/* Product Grid */}
       <section className="mx-auto max-w-[1440px] px-4 sm:px-6 lg:px-10 py-10 lg:py-16 pb-20 sm:pb-16">
-        {displayed.length === 0 ? (
+        {productsLoading && products.length === 0 ? (
+          <div aria-busy="true" aria-label="Loading products">
+            <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-[#5C5C5C] mb-4">
+              Loading products...
+            </p>
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3.5 sm:gap-6">
+              {[0, 1, 2, 3].map((slot) => (
+                <div
+                  key={slot}
+                  className="aspect-[4/5] rounded-2xl sm:rounded-3xl bg-[#E4E3DF] animate-pulse"
+                />
+              ))}
+            </div>
+          </div>
+        ) : productsError && products.length === 0 ? (
           <div className="rounded-3xl border border-[#D9D9D9] bg-[#EAE9E4] p-10 sm:p-12 text-center space-y-4">
             <p className="text-lg font-editorial font-medium text-[#0A0A0A]">
-              No products available at the moment.
+              Unable to load products. Please try again.
+            </p>
+            <button
+              type="button"
+              onClick={() => void refreshProducts()}
+              className="btn-base btn-primary"
+            >
+              Retry
+            </button>
+          </div>
+        ) : displayed.length === 0 ? (
+          <div className="rounded-3xl border border-[#D9D9D9] bg-[#EAE9E4] p-10 sm:p-12 text-center space-y-4">
+            <p className="text-lg font-editorial font-medium text-[#0A0A0A]">
+              No products are publicly available.
             </p>
             <Link
               to="/shop"

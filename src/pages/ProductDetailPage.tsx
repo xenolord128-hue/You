@@ -31,6 +31,7 @@ import { SeoHead } from '../components/SeoHead';
 import { Reveal } from '../components/Motion';
 import { trackPixelEvent } from '../lib/metaPixel';
 import { findCategoryByIdentifier } from '../lib/categoryUtils';
+import { apiUrl } from '../lib/api';
 
 type TabKey = 'description' | 'material' | 'size' | 'care' | 'shipping';
 
@@ -39,6 +40,9 @@ export const ProductDetailPage: React.FC = () => {
   const navigate = useNavigate();
   const {
     products,
+    productsLoading,
+    productsError,
+    refreshProducts,
     categories,
     reviews,
     settings,
@@ -142,25 +146,45 @@ export const ProductDetailPage: React.FC = () => {
     });
   }, [product]);
 
+  const touchStartRef = useRef<{ x: number; y: number } | null>(null);
+
   if (!product) {
     return (
       <main className="mx-auto max-w-[1400px] px-4 sm:px-6 py-12 sm:py-16 text-center space-y-4">
         <h1 className="font-editorial text-2xl font-bold text-[#0A0A0A]">
-          {products.length === 0
-            ? 'No products available at the moment.'
-            : 'Product not found'}
+          {productsLoading
+            ? 'Loading products...'
+            : productsError
+              ? 'Unable to load products. Please try again.'
+              : products.length === 0
+                ? 'No products are publicly available.'
+                : 'Product not found'}
         </h1>
         <p className="text-sm text-[#5C5C5C]">
-          {products.length === 0
-            ? 'Check back once products are published from the store catalog.'
-            : 'This product may have been unpublished or removed.'}
+          {productsLoading
+            ? 'Fetching the latest catalog items.'
+            : productsError
+              ? productsError
+              : products.length === 0
+                ? 'Check back once products are published from the store catalog.'
+                : 'This product may have been unpublished or removed.'}
         </p>
-        <Link
-          to="/shop"
-          className="btn-base btn-primary"
-        >
-          Back to Catalog
-        </Link>
+        {productsError ? (
+          <button
+            type="button"
+            onClick={() => void refreshProducts()}
+            className="btn-base btn-primary"
+          >
+            Retry
+          </button>
+        ) : !productsLoading ? (
+          <Link
+            to="/shop"
+            className="btn-base btn-primary"
+          >
+            Back to Catalog
+          </Link>
+        ) : null}
       </main>
     );
   }
@@ -223,7 +247,7 @@ export const ProductDetailPage: React.FC = () => {
     if (!fitQuestion.trim()) return;
     setFitLoading(true);
     try {
-      const res = await fetch('/api/style-advice', {
+      const res = await fetch(apiUrl('/api/style-advice'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -319,9 +343,34 @@ export const ProductDetailPage: React.FC = () => {
 
       {/* Main 12-Col Split Layout */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-10 items-start">
-        {/* Left (7 Cols): Main Product Gallery + 4-5 Square Thumbnails */}
-        <div className="lg:col-span-7 space-y-4">
-          <div className="relative aspect-[4/5] rounded-3xl bg-white border border-[#D9D9D9] navy-shadow overflow-hidden">
+        {/* Left (7 Cols): Main Product Gallery + Thumbnails */}
+        <div className="lg:col-span-7 min-w-0 space-y-3 sm:space-y-4">
+          <div
+            onTouchStart={(e) => {
+              if (e.touches.length === 1) {
+                touchStartRef.current = {
+                  x: e.touches[0].clientX,
+                  y: e.touches[0].clientY,
+                };
+              }
+            }}
+            onTouchEnd={(e) => {
+              if (!touchStartRef.current || galleryImages.length <= 1 || showingVideo) return;
+              const touch = e.changedTouches[0];
+              const dx = touch.clientX - touchStartRef.current.x;
+              const dy = touch.clientY - touchStartRef.current.y;
+              touchStartRef.current = null;
+              if (Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(dy) * 1.2) {
+                setZoomed(false);
+                setActiveImageIdx((i) =>
+                  dx < 0
+                    ? (i + 1) % galleryImages.length
+                    : (i - 1 + galleryImages.length) % galleryImages.length
+                );
+              }
+            }}
+            className="relative aspect-[4/5] rounded-2xl sm:rounded-3xl bg-white border border-[#D9D9D9] navy-shadow overflow-hidden touch-pan-y"
+          >
             {showingVideo && product.videoUrl ? (
               <video
                 src={product.videoUrl}
@@ -343,7 +392,7 @@ export const ProductDetailPage: React.FC = () => {
             )}
 
             {discountPct > 0 && !showingVideo && (
-              <span className="absolute top-4 left-4 px-3 py-1 rounded-full bg-[#0A0A0A] text-white font-mono text-xs font-bold border border-[#292929]">
+              <span className="absolute top-3.5 left-3.5 sm:top-4 sm:left-4 px-3 py-1 rounded-full bg-[#0A0A0A] text-white font-mono text-xs font-bold border border-[#292929]">
                 -{discountPct}% OFF
               </span>
             )}
@@ -353,7 +402,7 @@ export const ProductDetailPage: React.FC = () => {
                 type="button"
                 onClick={() => setFullscreenOpen(true)}
                 aria-label="Open full-screen view"
-                className="btn-base btn-icon absolute top-3.5 right-3.5 frosted-glass border border-[#D4D3CE] text-[#0A0A0A] hover:border-[#0A0A0A]"
+                className="btn-base btn-icon !min-h-[44px] !min-w-[44px] absolute top-3 right-3 sm:top-3.5 sm:right-3.5 frosted-glass border border-[#D4D3CE] text-[#0A0A0A] hover:border-[#0A0A0A]"
               >
                 <Maximize2 className="h-4 w-4" />
               </button>
@@ -367,7 +416,7 @@ export const ProductDetailPage: React.FC = () => {
                     setActiveImageIdx((i) => (i - 1 + galleryImages.length) % galleryImages.length)
                   }
                   aria-label="Previous image"
-                  className="btn-base btn-icon absolute left-3.5 top-1/2 -translate-y-1/2 frosted-glass border border-[#D4D3CE] text-[#0A0A0A] hover:border-[#0A0A0A]"
+                  className="btn-base btn-icon !min-h-[44px] !min-w-[44px] absolute left-2.5 sm:left-3.5 top-1/2 -translate-y-1/2 frosted-glass border border-[#D4D3CE] text-[#0A0A0A] hover:border-[#0A0A0A]"
                 >
                   <ChevronLeft className="h-4 w-4" />
                 </button>
@@ -375,7 +424,7 @@ export const ProductDetailPage: React.FC = () => {
                   type="button"
                   onClick={() => setActiveImageIdx((i) => (i + 1) % galleryImages.length)}
                   aria-label="Next image"
-                  className="btn-base btn-icon absolute right-3.5 top-1/2 -translate-y-1/2 frosted-glass border border-[#D4D3CE] text-[#0A0A0A] hover:border-[#0A0A0A]"
+                  className="btn-base btn-icon !min-h-[44px] !min-w-[44px] absolute right-2.5 sm:right-3.5 top-1/2 -translate-y-1/2 frosted-glass border border-[#D4D3CE] text-[#0A0A0A] hover:border-[#0A0A0A]"
                 >
                   <ChevronRight className="h-4 w-4" />
                 </button>
@@ -383,7 +432,33 @@ export const ProductDetailPage: React.FC = () => {
             )}
           </div>
 
-          <div className="grid grid-cols-4 sm:grid-cols-5 gap-3">
+          {/* Mobile Pagination Dots & Counter */}
+          {galleryImages.length > 1 && !showingVideo && (
+            <div className="flex lg:hidden items-center justify-between px-1">
+              <div className="flex items-center gap-1.5" role="tablist" aria-label="Product gallery slides">
+                {galleryImages.map((_, idx) => (
+                  <button
+                    key={`dot-${idx}`}
+                    type="button"
+                    aria-label={`View image ${idx + 1}`}
+                    aria-selected={activeImageIdx === idx}
+                    onClick={() => {
+                      setShowingVideo(false);
+                      setActiveImageIdx(idx);
+                    }}
+                    className={`h-2 rounded-full transition-all cursor-pointer ${
+                      activeImageIdx === idx ? 'w-5 bg-[#0A0A0A]' : 'w-2 bg-[#BDBDBD]'
+                    }`}
+                  />
+                ))}
+              </div>
+              <span className="font-mono text-[11px] font-semibold text-[#5C5C5C] tabular-nums">
+                {activeImageIdx + 1} / {galleryImages.length}
+              </span>
+            </div>
+          )}
+
+          <div className="flex lg:grid lg:grid-cols-5 gap-2.5 lg:gap-3 overflow-x-auto no-scrollbar pb-1">
             {galleryImages.map((img, idx) => (
               <button
                 key={`${img}-${idx}`}
@@ -392,7 +467,8 @@ export const ProductDetailPage: React.FC = () => {
                   setShowingVideo(false);
                   setActiveImageIdx(idx);
                 }}
-                className={`aspect-square rounded-2xl overflow-hidden border-2 transition-all ${
+                aria-label={`Select image ${idx + 1}`}
+                className={`w-16 sm:w-20 lg:w-auto shrink-0 aspect-square rounded-xl lg:rounded-2xl overflow-hidden border-2 transition-all cursor-pointer ${
                   !showingVideo && activeImageIdx === idx
                     ? 'border-[#0A0A0A] shadow-md scale-[0.98]'
                     : 'border-[#D9D9D9] opacity-75 hover:opacity-100'
@@ -413,7 +489,7 @@ export const ProductDetailPage: React.FC = () => {
                   setZoomed(false);
                   setShowingVideo(true);
                 }}
-                className={`aspect-square rounded-2xl overflow-hidden border-2 bg-[#0A0A0A] text-white flex flex-col items-center justify-center gap-1 transition-all ${
+                className={`w-16 sm:w-20 lg:w-auto shrink-0 aspect-square rounded-xl lg:rounded-2xl overflow-hidden border-2 bg-[#0A0A0A] text-white flex flex-col items-center justify-center gap-1 transition-all cursor-pointer ${
                   showingVideo
                     ? 'border-[#0A0A0A] shadow-md scale-[0.98]'
                     : 'border-[#D9D9D9] opacity-85 hover:opacity-100'
@@ -429,7 +505,7 @@ export const ProductDetailPage: React.FC = () => {
         </div>
 
         {/* Right (5 Cols): Purchase Module */}
-        <div className="lg:col-span-5 rounded-2xl sm:rounded-3xl bg-white border border-[#D9D9D9] navy-shadow p-5 sm:p-8 space-y-6 lg:sticky lg:top-[72px]">
+        <div className="lg:col-span-5 min-w-0 rounded-2xl sm:rounded-3xl bg-white border border-[#D9D9D9] navy-shadow p-4 sm:p-8 space-y-6 lg:sticky lg:top-[72px]">
           <div className="space-y-3 border-b border-[#D9D9D9] pb-5">
             <div className="flex items-center justify-between gap-2">
               <span className="px-3 py-1 rounded-lg bg-[#EAE9E4] text-[#0A0A0A] font-mono text-[10px] font-bold uppercase tracking-widest border border-[#D4D3CE]">
@@ -441,7 +517,7 @@ export const ProductDetailPage: React.FC = () => {
                   type="button"
                   onClick={() => toggleWishlist(product.id)}
                   aria-label="Toggle wishlist"
-                  className={`btn-base btn-icon border ${
+                  className={`btn-base btn-icon !min-h-[44px] !min-w-[44px] border ${
                     wishlisted
                       ? 'bg-[#0A0A0A] border-[#0A0A0A] text-white'
                       : 'bg-[#F3F2EE] border-[#D4D3CE] text-[#0A0A0A] hover:border-[#0A0A0A]'
@@ -482,14 +558,19 @@ export const ProductDetailPage: React.FC = () => {
               </span>
             </div>
 
-            <div className="pt-1 flex items-baseline gap-3 font-mono tabular-nums">
-              <span className="text-3xl font-bold text-[#0A0A0A]">
+            <div className="pt-1 flex flex-wrap items-baseline gap-2.5 sm:gap-3 font-mono tabular-nums">
+              <span className="text-2xl sm:text-3xl font-bold text-[#0A0A0A]">
                 {formatBDT(product.price)}
               </span>
               {product.compare_at_price && product.compare_at_price > product.price && (
-                <span className="text-sm text-[#5C5C5C] line-through">
-                  {formatBDT(product.compare_at_price)}
-                </span>
+                <>
+                  <span className="text-sm text-[#5C5C5C] line-through">
+                    {formatBDT(product.compare_at_price)}
+                  </span>
+                  <span className="text-[11px] font-semibold text-[#0A0A0A] bg-[#EAE9E4] border border-[#D4D3CE] px-2 py-0.5 rounded-md">
+                    Save {formatBDT(product.compare_at_price - product.price)}
+                  </span>
+                </>
               )}
             </div>
           </div>
@@ -507,7 +588,7 @@ export const ProductDetailPage: React.FC = () => {
                     key={c.name}
                     type="button"
                     onClick={() => setSelectedColor(c.name)}
-                    className={`chip-btn ${active ? 'chip-btn-active' : ''}`}
+                    className={`chip-btn min-h-[44px] ${active ? 'chip-btn-active' : ''}`}
                   >
                     <span
                       className="h-3.5 w-3.5 rounded-full border border-[#D4D3CE] shadow-xs"
@@ -529,7 +610,7 @@ export const ProductDetailPage: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setSizeGuideOpen(true)}
-                className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#0A0A0A] hover:text-[#5C5C5C] transition-colors cursor-pointer py-1"
+                className="inline-flex items-center gap-1.5 min-h-[36px] text-xs font-semibold text-[#0A0A0A] hover:text-[#5C5C5C] transition-colors cursor-pointer py-1"
               >
                 <Ruler className="h-3.5 w-3.5" /> Size Guide
               </button>
@@ -540,7 +621,7 @@ export const ProductDetailPage: React.FC = () => {
                   key={sz}
                   type="button"
                   onClick={() => setSelectedSize(sz)}
-                  className={`chip-btn min-w-[48px] font-mono font-semibold ${
+                  className={`chip-btn min-h-[44px] min-w-[48px] font-mono font-semibold ${
                     selectedSize === sz ? 'chip-btn-active' : ''
                   }`}
                 >
@@ -556,7 +637,7 @@ export const ProductDetailPage: React.FC = () => {
 
           {/* Quantity + Primary Black Add to Bag + Secondary Instant Checkout + WhatsApp + Share/QR */}
           <div className="space-y-3">
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap min-[420px]:flex-nowrap items-center gap-2.5 sm:gap-3">
               <div className="inline-flex items-center rounded-[10px] bg-[#F3F2EE] border border-[#D4D3CE] h-12 shrink-0">
                 <button
                   type="button"
@@ -583,7 +664,7 @@ export const ProductDetailPage: React.FC = () => {
                 type="button"
                 disabled={variantQty <= 0}
                 onClick={handleAddToCart}
-                className="btn-base btn-primary btn-lg flex-1"
+                className="btn-base btn-primary btn-lg flex-1 min-w-[180px]"
               >
                 {variantQty > 0 ? t('addToBag') : 'SOLD OUT'}
               </button>
@@ -704,7 +785,7 @@ export const ProductDetailPage: React.FC = () => {
                 key={key}
                 type="button"
                 onClick={() => setActiveTab(key)}
-                className={`chip-btn font-mono text-xs uppercase tracking-wider ${
+                className={`chip-btn min-h-[44px] shrink-0 font-mono text-xs uppercase tracking-wider ${
                   activeTab === key ? 'chip-btn-active' : ''
                 }`}
               >
@@ -859,16 +940,25 @@ export const ProductDetailPage: React.FC = () => {
       )}
 
       {/* Mobile Sticky Quick Buy Bar */}
-      <div className="fixed bottom-0 inset-x-0 z-30 md:hidden bg-white/95 border-t border-[#D9D9D9] px-4 py-2.5 flex items-center justify-between gap-3 shadow-[0_-8px_24px_rgba(10,10,10,0.06)]">
+      <div className="fixed bottom-0 inset-x-0 z-30 md:hidden bg-white/95 backdrop-blur-sm border-t border-[#D9D9D9] px-4 pt-2.5 pb-[max(0.625rem,env(safe-area-inset-bottom))] flex items-center justify-between gap-3 shadow-[0_-8px_24px_rgba(10,10,10,0.08)]">
         <div className="min-w-0">
           <p className="text-xs font-semibold text-[#0A0A0A] truncate">{product.name}</p>
-          <p className="text-xs font-mono font-bold text-[#292929] tabular-nums">{formatBDT(product.price)}</p>
+          <div className="flex items-baseline gap-2">
+            <span className="text-sm font-mono font-bold text-[#0A0A0A] tabular-nums">
+              {formatBDT(product.price)}
+            </span>
+            {product.compare_at_price && product.compare_at_price > product.price && (
+              <span className="text-[11px] font-mono text-[#5C5C5C] line-through tabular-nums">
+                {formatBDT(product.compare_at_price)}
+              </span>
+            )}
+          </div>
         </div>
         <button
           type="button"
           disabled={variantQty <= 0}
           onClick={handleAddToCart}
-          className="btn-base btn-primary shrink-0"
+          className="btn-base btn-primary min-h-[44px] px-5 shrink-0"
         >
           {variantQty > 0 ? 'Add to Bag' : 'Sold Out'}
         </button>

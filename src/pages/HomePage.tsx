@@ -93,7 +93,7 @@ const BENEFIT_ITEMS = [
 ];
 
 export const HomePage: React.FC = () => {
-  const { products, productsLoading, settings } = useStore();
+  const { products, productsLoading, productsError, refreshProducts, settings } = useStore();
   const [brokenImg, setBrokenImg] = useState<Record<string, boolean>>({});
 
   const featuredProducts = useMemo(() => {
@@ -526,25 +526,44 @@ export const HomePage: React.FC = () => {
           </div>
 
           {productsLoading && featuredProducts.length === 0 ? (
-            <div
-              className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3.5 sm:gap-5"
-              aria-busy="true"
-              aria-label="Loading featured products"
-            >
-              {[0, 1, 2, 3, 4].map((slot) => (
-                <div key={slot} className="space-y-3 animate-pulse">
-                  <div className="aspect-square bg-[#E4E3DF]" />
-                  <div className="space-y-1.5">
-                    <div className="h-3.5 w-3/4 bg-[#E4E3DF]" />
-                    <div className="h-3 w-1/3 bg-[#E4E3DF]" />
+            <div aria-busy="true" aria-label="Loading featured products">
+              <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-[#5C5C5C] mb-4">
+                Loading products...
+              </p>
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3.5 sm:gap-5">
+                {[0, 1, 2, 3, 4].map((slot) => (
+                  <div key={slot} className="space-y-3 animate-pulse">
+                    <div className="aspect-[4/5] bg-[#E4E3DF]" />
+                    <div className="space-y-1.5">
+                      <div className="h-3.5 w-3/4 bg-[#E4E3DF]" />
+                      <div className="h-3 w-1/3 bg-[#E4E3DF]" />
+                    </div>
                   </div>
-                </div>
-              ))}
+                ))}
+              </div>
+            </div>
+          ) : productsError && featuredProducts.length === 0 ? (
+            <div className="border border-[#DCDBD6] bg-[#EAE9E4] px-6 py-14 text-center space-y-3">
+              <p className="font-street text-sm sm:text-base font-semibold uppercase tracking-[0.14em] text-[#0A0A0A]">
+                Unable to load products. Please try again.
+              </p>
+              <p className="text-xs text-[#555555]">
+                Our store catalog is temporarily unreachable. Tap retry to reload.
+              </p>
+              <div className="pt-1">
+                <button
+                  type="button"
+                  onClick={() => void refreshProducts()}
+                  className="btn-base btn-primary btn-sm"
+                >
+                  Retry
+                </button>
+              </div>
             </div>
           ) : featuredProducts.length === 0 ? (
             <div className="border border-[#DCDBD6] bg-[#EAE9E4] px-6 py-14 text-center">
               <p className="font-street text-sm sm:text-base font-semibold uppercase tracking-[0.14em] text-[#0A0A0A]">
-                No products available at the moment.
+                No products are publicly available.
               </p>
               <p className="mt-2 text-xs text-[#555555]">
                 New pieces added and published from the store catalog will appear here.
@@ -560,7 +579,7 @@ export const HomePage: React.FC = () => {
                     to={`/product/${product.slug}`}
                     className="group block"
                   >
-                    <div className="aspect-square bg-[#E8E7E3] overflow-hidden relative">
+                    <div className="aspect-[4/5] bg-[#E8E7E3] overflow-hidden relative">
                       {imgSrc && !brokenImg[product.id] ? (
                         <img
                           src={imgSrc}
@@ -599,7 +618,7 @@ export const HomePage: React.FC = () => {
                 to="/shop"
                 className="lg:hidden group block"
               >
-                <div className="aspect-square bg-[#0A0A0A] text-white p-5 flex flex-col justify-between transition-colors group-hover:bg-[#191919]">
+                <div className="aspect-[4/5] bg-[#0A0A0A] text-white p-5 flex flex-col justify-between transition-colors group-hover:bg-[#191919]">
                   <span className="font-mono text-[10px] uppercase tracking-[0.22em] text-white/60">
                     ARCHIVE
                   </span>

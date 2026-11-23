@@ -28,7 +28,7 @@ service cloud.firestore {
     }
 
     function isAdminEmail() {
-      return isVerifiedUser() && request.auth.token.email == 'lord79915@gmail.com';
+      return isVerifiedUser() && request.auth.token.email in ['lord79915@gmail.com', 'pythoxfashion@gmail.com'];
     }
 
     function isAdmin() {
@@ -249,6 +249,22 @@ service cloud.firestore {
         && (!('createdAt' in data) || isValidStr(data.createdAt, 0, 64));
     }
 
+    function isValidMediaAsset(data) {
+      return data.keys().hasAll([
+          'id', 'kind', 'mimeType', 'filename', 'sizeBytes', 'dataBase64', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'kind', 'mimeType', 'filename', 'sizeBytes', 'dataBase64', 'createdAt'
+        ])
+        && isValidId(data.id)
+        && data.kind == 'image'
+        && data.mimeType in ['image/jpeg', 'image/png', 'image/webp']
+        && isValidStr(data.filename, 1, 160)
+        && data.sizeBytes is number && data.sizeBytes > 0 && data.sizeBytes <= 720000
+        && isValidStr(data.dataBase64, 10, 960000)
+        && isValidStr(data.createdAt, 1, 64);
+    }
+
     match /test/{docId} {
       allow get: if docId == 'connection';
       allow list, create, update, delete: if false;
@@ -344,6 +360,14 @@ service cloud.firestore {
       allow create: if isValidId(userId) && isAdmin() && isValidAdminUser(incoming());
       allow update: if isValidId(userId) && isAdmin() && isValidAdminUser(incoming());
       allow delete: if isValidId(userId) && isAdmin();
+    }
+
+    match /media_assets/{mediaId} {
+      allow get: if isValidId(mediaId);
+      allow list: if false;
+      allow create: if isValidId(mediaId) && isAdmin() && isValidMediaAsset(incoming()) && incoming().id == mediaId;
+      allow update: if isValidId(mediaId) && isAdmin() && isValidMediaAsset(incoming()) && incoming().id == existing().id && incoming().createdAt == existing().createdAt;
+      allow delete: if isValidId(mediaId) && isAdmin();
     }
   }
 }

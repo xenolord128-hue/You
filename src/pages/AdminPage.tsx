@@ -279,6 +279,7 @@ export const AdminPage: React.FC = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [loginError, setLoginError] = useState('');
   const [loggingIn, setLoggingIn] = useState(false);
+  const [googleLoggingIn, setGoogleLoggingIn] = useState(false);
 
   const [activeTab, setActiveTab] = useState<AdminTab>('overview');
   const [isSeeding, setIsSeeding] = useState(false);
@@ -440,6 +441,23 @@ export const AdminPage: React.FC = () => {
     }
   };
 
+  const handleGoogleAdminSignIn = async () => {
+    if (googleLoggingIn) return;
+    setLoginError('');
+    setGoogleLoggingIn(true);
+    try {
+      await signInAdmin();
+    } catch (err: unknown) {
+      setLoginError(
+        err instanceof Error
+          ? err.message
+          : 'Unable to sign in with Google. Ensure this domain is authorized in Firebase Authentication.'
+      );
+    } finally {
+      setGoogleLoggingIn(false);
+    }
+  };
+
   const handleLockSession = async () => {
     try {
       await signOutAdminUser();
@@ -584,7 +602,7 @@ export const AdminPage: React.FC = () => {
     );
   }
 
-  // 2) Admin Panel Password-Only Gate
+  // 2) Admin Panel Gate (Administrator Password + Verified Google Admin)
   if (!isAdminAuthenticated) {
     return (
       <div className="admin-console justify-center items-center p-4 sm:p-6">
@@ -615,85 +633,121 @@ export const AdminPage: React.FC = () => {
               {adminSetupRequired ? 'Set Admin Password' : 'Administrator Access'}
             </h1>
             <p className="text-[13px] text-[#6A6A6A] leading-relaxed">
-              {adminSetupRequired
-                ? 'Create your administrator password to secure and unlock the store dashboard.'
-                : 'Enter the administrator password to manage products, media uploads, categories, and orders.'}
+              Sign in with your authorized Google account (<span className="font-mono text-[#0A0A0A]">lord79915@gmail.com</span> or <span className="font-mono text-[#0A0A0A]">pythoxfashion@gmail.com</span>) so uploaded products and images save permanently to Cloud Database.
             </p>
           </div>
 
-          <form onSubmit={(e) => void handlePasswordSubmit(e)} className="space-y-4">
-            <div className="admin-fld">
-              <label className="admin-lbl" htmlFor="admin-password-input">
-                {adminSetupRequired ? 'New Administrator Password' : 'Administrator Password'}
-              </label>
-              <div className="relative">
-                <input
-                  id="admin-password-input"
-                  type={showPassword ? 'text' : 'password'}
-                  autoComplete={adminSetupRequired ? 'new-password' : 'current-password'}
-                  autoFocus
-                  required
-                  value={passwordInput}
-                  onChange={(e) => setPasswordInput(e.target.value)}
-                  placeholder={
-                    adminSetupRequired
-                      ? 'Minimum 8 characters'
-                      : 'Enter administrator password'
-                  }
-                  className="admin-inp !h-11 pr-11"
-                />
+          <button
+            type="button"
+            disabled={googleLoggingIn}
+            onClick={() => void handleGoogleAdminSignIn()}
+            className="admin-btn admin-btn-dark w-full !h-11 font-semibold inline-flex items-center justify-center gap-2.5"
+          >
+            <svg className="h-4 w-4" viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                fill="#4285F4"
+                d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17Z"
+              />
+              <path
+                fill="#34A853"
+                d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.11-6.72-4.96H1.29v3.14C3.26 21.3 7.31 24 12 24Z"
+              />
+              <path
+                fill="#FBBC05"
+                d="M5.28 14.24c-.24-.72-.38-1.49-.38-2.24s.14-1.52.38-2.24V6.62H1.29C.47 8.24 0 10.06 0 12s.47 3.76 1.29 5.38l3.99-3.14Z"
+              />
+              <path
+                fill="#EA4335"
+                d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.31 0 3.26 2.7 1.29 6.62l3.99 3.14c.95-2.85 3.6-4.96 6.72-4.96Z"
+              />
+            </svg>
+            {googleLoggingIn ? 'Signing in...' : 'Sign in with Google (Full Cloud Access)'}
+          </button>
+
+          {backendConnected && (
+            <>
+              <div className="relative flex items-center py-0.5">
+                <div className="flex-grow border-t border-[#ECECEB]" />
+                <span className="mx-3 text-[11px] uppercase tracking-[0.08em] text-[#8A8A8A]">
+                  or server password
+                </span>
+                <div className="flex-grow border-t border-[#ECECEB]" />
+              </div>
+
+              <form onSubmit={(e) => void handlePasswordSubmit(e)} className="space-y-4">
+                <div className="admin-fld">
+                  <label className="admin-lbl" htmlFor="admin-password-input">
+                    {adminSetupRequired ? 'New Administrator Password' : 'Administrator Password'}
+                  </label>
+                  <div className="relative">
+                    <input
+                      id="admin-password-input"
+                      type={showPassword ? 'text' : 'password'}
+                      autoComplete={adminSetupRequired ? 'new-password' : 'current-password'}
+                      required
+                      value={passwordInput}
+                      onChange={(e) => setPasswordInput(e.target.value)}
+                      placeholder={
+                        adminSetupRequired
+                          ? 'Minimum 8 characters'
+                          : 'Enter administrator password'
+                      }
+                      className="admin-inp !h-11 pr-11"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword((v) => !v)}
+                      aria-label={showPassword ? 'Hide password' : 'Show password'}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 h-8 w-8 rounded-[7px] text-[#6A6A6A] hover:text-[#0A0A0A] hover:bg-[#F1F1F0] inline-flex items-center justify-center cursor-pointer"
+                    >
+                      {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </button>
+                  </div>
+                </div>
+
+                {adminSetupRequired && (
+                  <div className="admin-fld">
+                    <label className="admin-lbl" htmlFor="admin-password-confirm">
+                      Confirm Password
+                    </label>
+                    <input
+                      id="admin-password-confirm"
+                      type={showPassword ? 'text' : 'password'}
+                      autoComplete="new-password"
+                      required
+                      value={confirmPasswordInput}
+                      onChange={(e) => setConfirmPasswordInput(e.target.value)}
+                      placeholder="Re-enter administrator password"
+                      className="admin-inp !h-11"
+                    />
+                  </div>
+                )}
+
                 <button
-                  type="button"
-                  onClick={() => setShowPassword((v) => !v)}
-                  aria-label={showPassword ? 'Hide password' : 'Show password'}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 h-8 w-8 rounded-[7px] text-[#6A6A6A] hover:text-[#0A0A0A] hover:bg-[#F1F1F0] inline-flex items-center justify-center cursor-pointer"
+                  type="submit"
+                  disabled={loggingIn}
+                  className="admin-btn w-full !h-11 font-semibold inline-flex items-center justify-center gap-2"
                 >
-                  {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  <Lock className="h-4 w-4" />
+                  {loggingIn
+                    ? 'Verifying...'
+                    : adminSetupRequired
+                      ? 'Save Password & Open Admin Panel'
+                      : 'Unlock with Password'}
                 </button>
-              </div>
-            </div>
+              </form>
+            </>
+          )}
 
-            {adminSetupRequired && (
-              <div className="admin-fld">
-                <label className="admin-lbl" htmlFor="admin-password-confirm">
-                  Confirm Password
-                </label>
-                <input
-                  id="admin-password-confirm"
-                  type={showPassword ? 'text' : 'password'}
-                  autoComplete="new-password"
-                  required
-                  value={confirmPasswordInput}
-                  onChange={(e) => setConfirmPasswordInput(e.target.value)}
-                  placeholder="Re-enter administrator password"
-                  className="admin-inp !h-11"
-                />
-              </div>
-            )}
-
-            {loginError && (
-              <p
-                role="alert"
-                aria-live="polite"
-                className="rounded-[9px] border border-[#0A0A0A] bg-[#F1F1F0] px-3.5 py-2.5 text-xs font-medium text-[#0A0A0A]"
-              >
-                {loginError}
-              </p>
-            )}
-
-            <button
-              type="submit"
-              disabled={loggingIn}
-              className="admin-btn admin-btn-dark w-full !h-11 font-semibold inline-flex items-center justify-center gap-2"
+          {loginError && (
+            <p
+              role="alert"
+              aria-live="polite"
+              className="rounded-[9px] border border-[#0A0A0A] bg-[#F1F1F0] px-3.5 py-2.5 text-xs font-medium text-[#0A0A0A] leading-relaxed"
             >
-              <Lock className="h-4 w-4" />
-              {loggingIn
-                ? 'Verifying...'
-                : adminSetupRequired
-                  ? 'Save Password & Open Admin Panel'
-                  : 'Unlock Admin Panel'}
-            </button>
-          </form>
+              {loginError}
+            </p>
+          )}
 
           <div className="pt-3 border-t border-[#ECECEB] flex items-center justify-between">
             <Link
@@ -1202,7 +1256,7 @@ export const AdminPage: React.FC = () => {
                 disabled={linkingCloud}
                 onClick={() => void handleLinkFirebaseCloud()}
                 className="admin-btn inline-flex items-center gap-1.5"
-                title="Optionally link Google Admin (lord79915@gmail.com) to mirror products and media to Firebase Firestore"
+                title="Optionally link Google Admin (lord79915@gmail.com or pythoxfashion@gmail.com) to mirror products and media to Firebase Firestore"
               >
                 {linkingCloud ? 'Linking Cloud...' : 'Link Cloud Sync'}
               </button>
@@ -1228,6 +1282,23 @@ export const AdminPage: React.FC = () => {
             </button>
           </div>
         </header>
+
+        {!isFirebaseAdminLinked && (
+          <div className="rounded-2xl border border-[#991B1B] bg-[#FEF2F2] px-4 py-3.5 flex flex-wrap items-center justify-between gap-3 text-xs text-[#7F1D1D]">
+            <p className="leading-relaxed">
+              <strong className="text-[#7F1D1D]">Cloud Database Connection Required to Upload/Publish:</strong>{' '}
+              You unlocked with Server Password only. Connect Google Admin (<span className="font-mono">lord79915@gmail.com</span> or <span className="font-mono">pythoxfashion@gmail.com</span>) so uploaded products and images save permanently to Firestore instead of disappearing after server restarts.
+            </p>
+            <button
+              type="button"
+              disabled={linkingCloud}
+              onClick={() => void handleLinkFirebaseCloud()}
+              className="admin-btn admin-btn-dark shrink-0"
+            >
+              {linkingCloud ? 'Connecting...' : 'Sign in with Google (Required)'}
+            </button>
+          </div>
+        )}
 
         {/* ================= OVERVIEW ================= */}
         {activeTab === 'overview' && (
@@ -1485,6 +1556,9 @@ export const AdminPage: React.FC = () => {
                 onCancelEdit={() => setEditingProductId(null)}
                 upsertProduct={upsertProduct}
                 showToast={showToast}
+                isFirebaseAdminLinked={isFirebaseAdminLinked}
+                onLinkCloudSync={handleLinkFirebaseCloud}
+                linkingCloud={linkingCloud}
               />
             </div>
 

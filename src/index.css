@@ -210,6 +210,12 @@
     border-color 160ms ease;
 }
 
+@media (max-width: 1023px) {
+  .chip-btn {
+    min-height: 44px;
+  }
+}
+
 .chip-btn:hover:not(:disabled) {
   border-color: #0A0A0A;
   color: #0A0A0A;

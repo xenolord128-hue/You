@@ -1,6 +1,6 @@
 import express, { CookieOptions, NextFunction, Request, Response } from 'express';
 import fs from 'fs/promises';
-import { createWriteStream } from 'fs';
+import { createWriteStream, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
@@ -12,19 +12,72 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+interface FirebaseAppletConfig {
+  projectId?: string;
+  firestoreDatabaseId?: string;
+  apiKey?: string;
+}
+
+let FIREBASE_CONFIG: FirebaseAppletConfig = {};
+try {
+  FIREBASE_CONFIG = JSON.parse(
+    readFileSync(path.resolve(__dirname, 'firebase-applet-config.json'), 'utf8')
+  ) as FirebaseAppletConfig;
+} catch {
+  FIREBASE_CONFIG = {};
+}
+
+const FIRESTORE_PROJECT_ID = FIREBASE_CONFIG.projectId || 'pythoxworld';
+const FIRESTORE_DATABASE_ID =
+  FIREBASE_CONFIG.firestoreDatabaseId || 'ai-studio-6bee1031-2130-4407-a2d1-d72f1790d816';
+const FIREBASE_API_KEY = (FIREBASE_CONFIG.apiKey || '').trim();
+const AUTHORIZED_ADMIN_EMAILS = new Set([
+  'lord79915@gmail.com',
+  'pythoxfashion@gmail.com',
+]);
+const FIRESTORE_REST_BASE = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(
+  FIRESTORE_PROJECT_ID
+)}/databases/${encodeURIComponent(FIRESTORE_DATABASE_ID)}/documents`;
+
 const PORT = Number(process.env.PORT) || 3000;
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+
+// Self-hosted file-backed persistence for store catalog, orders, reviews & settings
+const DATA_DIR = path.resolve(__dirname, 'data');
+const DATA_FILE = path.join(DATA_DIR, 'store-data.json');
+const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
+const SESSION_SECRET_FILE = path.join(DATA_DIR, '.session-secret');
+
+function loadOrCreateDurableSessionSecret(): string {
+  const fromEnv = (process.env.ADMIN_SESSION_SECRET || '').trim();
+  if (fromEnv) return fromEnv;
+  try {
+    mkdirSync(DATA_DIR, { recursive: true });
+    const existing = readFileSync(SESSION_SECRET_FILE, 'utf8').trim();
+    if (/^[a-f0-9]{64}$/i.test(existing)) {
+      return existing;
+    }
+  } catch {
+    // create below
+  }
+  const generated = crypto.randomBytes(32).toString('hex');
+  try {
+    mkdirSync(DATA_DIR, { recursive: true });
+    writeFileSync(SESSION_SECRET_FILE, generated, { encoding: 'utf8', mode: 0o600 });
+  } catch {
+    if (IS_PRODUCTION) {
+      console.warn(
+        '[SECURITY WARNING] ADMIN_SESSION_SECRET is not configured and .session-secret could not be persisted.'
+      );
+    }
+  }
+  return generated;
+}
 
 // Server-side Admin Session & Credential Protection (no hardcoded credential fallback)
 const ADMIN_COOKIE_NAME = 'pythox_admin_session';
 const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
-const RAW_SESSION_SECRET = (process.env.ADMIN_SESSION_SECRET || '').trim();
-if (!RAW_SESSION_SECRET && IS_PRODUCTION) {
-  console.warn(
-    '[SECURITY WARNING] ADMIN_SESSION_SECRET is not configured. Using ephemeral per-process secret.'
-  );
-}
-const SESSION_SECRET = RAW_SESSION_SECRET || crypto.randomBytes(32).toString('hex');
+const SESSION_SECRET = loadOrCreateDurableSessionSecret();
 
 const PASSWORD_SALT = crypto.randomBytes(16).toString('hex');
 const RAW_ADMIN_PASSWORD = (process.env.ADMIN_PASSWORD || '').trim();
@@ -43,10 +96,32 @@ const failedAttempts = new Map<string, { count: number; lockedUntil: number; las
 const MAX_FAILED_ATTEMPTS = 6;
 const LOCKOUT_MS = 10 * 60 * 1000;
 
-// Self-hosted file-backed persistence for store catalog, orders, reviews & settings
-const DATA_DIR = path.resolve(__dirname, 'data');
-const DATA_FILE = path.join(DATA_DIR, 'store-data.json');
-const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
+function normalizeOrigin(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return '';
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol === 'https:' || parsed.protocol === 'http:') {
+      return parsed.origin.toLowerCase();
+    }
+  } catch {
+    // ignore malformed origin
+  }
+  return '';
+}
+
+const TRUSTED_PUBLIC_ORIGINS = new Set<string>(
+  [
+    'https://pythoxworld.com',
+    'https://www.pythoxworld.com',
+    'https://pythoxworld.netlify.app',
+    process.env.APP_URL || '',
+    ...(process.env.ALLOWED_ORIGINS || '').split(','),
+    ...(!IS_PRODUCTION ? ['http://localhost:3000', 'http://127.0.0.1:3000', 'http://localhost:5173'] : []),
+  ]
+    .map(normalizeOrigin)
+    .filter(Boolean)
+);
 
 const IMAGE_MIME_EXT: Record<string, string> = {
   'image/jpeg': '.jpg',
@@ -121,12 +196,15 @@ function isAdminConfigured(_store: PersistedStore): boolean {
   return true;
 }
 
-function verifyAdminPassword(password: string, _store: PersistedStore): boolean {
+function verifyAdminPassword(password: string, store: PersistedStore): boolean {
   if (ENV_ADMIN_KEY) {
     const candidate = crypto.scryptSync(password, PASSWORD_SALT, 64);
     return crypto.timingSafeEqual(candidate, ENV_ADMIN_KEY);
   }
-  const authRecord = DEFAULT_ADMIN_VERIFIER;
+  const authRecord =
+    store.adminAuth && store.adminAuth.salt && store.adminAuth.hash
+      ? store.adminAuth
+      : DEFAULT_ADMIN_VERIFIER;
   try {
     const expected = Buffer.from(authRecord.hash, 'hex');
     const candidate = crypto.scryptSync(password, authRecord.salt, 64);
@@ -139,16 +217,329 @@ function verifyAdminPassword(password: string, _store: PersistedStore): boolean 
 
 let storeCache: PersistedStore | null = null;
 let writeQueue: Promise<void> = Promise.resolve();
+let lastFirestoreHydrationError: string | null = null;
+let lastFirestoreHydrationAt = 0;
+let firestoreHydrationPromise: Promise<void> | null = null;
+const FIRESTORE_SYNC_TTL_MS = 30_000;
 
-async function loadStore(): Promise<PersistedStore> {
-  if (storeCache) return storeCache;
-  try {
-    const raw = await fs.readFile(DATA_FILE, 'utf8');
-    storeCache = JSON.parse(raw) as PersistedStore;
-  } catch {
-    storeCache = {};
+type FirestoreRestValue =
+  | { nullValue: null }
+  | { booleanValue: boolean }
+  | { integerValue: string }
+  | { doubleValue: number }
+  | { stringValue: string }
+  | { arrayValue: { values?: FirestoreRestValue[] } }
+  | { mapValue: { fields?: Record<string, FirestoreRestValue> } };
+
+function toFirestoreValue(val: unknown): FirestoreRestValue {
+  if (val === null || val === undefined) return { nullValue: null };
+  if (typeof val === 'boolean') return { booleanValue: val };
+  if (typeof val === 'number') {
+    if (!Number.isFinite(val)) return { doubleValue: 0 };
+    if (Number.isInteger(val) && Math.abs(val) <= Number.MAX_SAFE_INTEGER) {
+      return { integerValue: String(val) };
+    }
+    return { doubleValue: val };
   }
-  return storeCache;
+  if (typeof val === 'string') return { stringValue: val };
+  if (Array.isArray(val)) {
+    return { arrayValue: { values: val.map((item) => toFirestoreValue(item)) } };
+  }
+  if (typeof val === 'object') {
+    const fields: Record<string, FirestoreRestValue> = {};
+    for (const [k, v] of Object.entries(val as Record<string, unknown>)) {
+      if (v !== undefined) {
+        fields[k] = toFirestoreValue(v);
+      }
+    }
+    return { mapValue: { fields } };
+  }
+  return { stringValue: String(val) };
+}
+
+function toFirestoreFields(obj: Record<string, unknown>): Record<string, FirestoreRestValue> {
+  const fields: Record<string, FirestoreRestValue> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (v !== undefined) {
+      fields[k] = toFirestoreValue(v);
+    }
+  }
+  return fields;
+}
+
+function fromFirestoreValue(val: Record<string, unknown> | undefined): unknown {
+  if (!val || typeof val !== 'object') return null;
+  if ('nullValue' in val) return null;
+  if ('booleanValue' in val) return Boolean(val.booleanValue);
+  if ('integerValue' in val) return Number(val.integerValue);
+  if ('doubleValue' in val) return Number(val.doubleValue);
+  if ('stringValue' in val) return String(val.stringValue);
+  if ('timestampValue' in val) return String(val.timestampValue);
+  if ('arrayValue' in val) {
+    const arrObj = val.arrayValue as { values?: Record<string, unknown>[] } | undefined;
+    return Array.isArray(arrObj?.values) ? arrObj.values.map(fromFirestoreValue) : [];
+  }
+  if ('mapValue' in val) {
+    const mapObj = val.mapValue as { fields?: Record<string, Record<string, unknown>> } | undefined;
+    const out: Record<string, unknown> = {};
+    if (mapObj?.fields) {
+      for (const [k, v] of Object.entries(mapObj.fields)) {
+        out[k] = fromFirestoreValue(v);
+      }
+    }
+    return out;
+  }
+  return null;
+}
+
+function fromFirestoreDoc(doc: { name?: string; fields?: Record<string, Record<string, unknown>> }): StoreRecord {
+  const out: Record<string, unknown> = {};
+  if (doc.fields) {
+    for (const [k, v] of Object.entries(doc.fields)) {
+      out[k] = fromFirestoreValue(v);
+    }
+  }
+  const fallbackId = typeof doc.name === 'string' ? doc.name.split('/').pop() || '' : '';
+  const id = typeof out.id === 'string' && out.id ? out.id : fallbackId;
+  return { ...out, id } as StoreRecord;
+}
+
+function getFirebaseIdTokenFromReq(req: Request): string {
+  const raw = req.headers['x-firebase-id-token'];
+  if (typeof raw === 'string' && raw.trim().length > 20) {
+    return raw.trim();
+  }
+  return '';
+}
+
+async function runFirestorePublishedProductsQuery(firebaseIdToken?: string): Promise<StoreRecord[]> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (firebaseIdToken) headers.Authorization = `Bearer ${firebaseIdToken}`;
+  const res = await fetch(`${FIRESTORE_REST_BASE}:runQuery`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      structuredQuery: {
+        from: [{ collectionId: 'products' }],
+        where: {
+          fieldFilter: {
+            field: { fieldPath: 'status' },
+            op: 'EQUAL',
+            value: { stringValue: 'Published' },
+          },
+        },
+      },
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`Firestore query failed with HTTP ${res.status}`);
+  }
+  const rows = (await res.json()) as {
+    document?: { name?: string; fields?: Record<string, Record<string, unknown>> };
+  }[];
+  if (!Array.isArray(rows)) return [];
+  return rows
+    .filter((r) => Boolean(r.document?.fields))
+    .map((r) => fromFirestoreDoc(r.document!));
+}
+
+async function listFirestoreCollection(
+  collectionId: string,
+  firebaseIdToken?: string
+): Promise<StoreRecord[]> {
+  const headers: Record<string, string> = {};
+  if (firebaseIdToken) headers.Authorization = `Bearer ${firebaseIdToken}`;
+  const results: StoreRecord[] = [];
+  let pageToken = '';
+  for (let page = 0; page < 10; page += 1) {
+    const pageQuery = pageToken
+      ? `?pageSize=200&pageToken=${encodeURIComponent(pageToken)}`
+      : '?pageSize=200';
+    const res = await fetch(`${FIRESTORE_REST_BASE}/${encodeURIComponent(collectionId)}${pageQuery}`, {
+      method: 'GET',
+      headers,
+    });
+    if (!res.ok) {
+      throw new Error(`Firestore list ${collectionId} failed with HTTP ${res.status}`);
+    }
+    const data = (await res.json()) as {
+      documents?: { name?: string; fields?: Record<string, Record<string, unknown>> }[];
+      nextPageToken?: string;
+    };
+    if (Array.isArray(data.documents)) {
+      results.push(...data.documents.map(fromFirestoreDoc));
+    }
+    if (!data.nextPageToken) break;
+    pageToken = data.nextPageToken;
+  }
+  return results;
+}
+
+async function getFirestoreDoc(
+  collectionId: string,
+  docId: string,
+  firebaseIdToken?: string
+): Promise<StoreRecord | null> {
+  const headers: Record<string, string> = {};
+  if (firebaseIdToken) headers.Authorization = `Bearer ${firebaseIdToken}`;
+  const res = await fetch(
+    `${FIRESTORE_REST_BASE}/${encodeURIComponent(collectionId)}/${encodeURIComponent(docId)}`,
+    { method: 'GET', headers }
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    throw new Error(`Firestore get ${collectionId}/${docId} failed with HTTP ${res.status}`);
+  }
+  const doc = (await res.json()) as {
+    name?: string;
+    fields?: Record<string, Record<string, unknown>>;
+  };
+  return fromFirestoreDoc(doc);
+}
+
+async function upsertFirestoreDoc(
+  collectionId: string,
+  docId: string,
+  data: Record<string, unknown>,
+  firebaseIdToken: string
+): Promise<void> {
+  const res = await fetch(
+    `${FIRESTORE_REST_BASE}/${encodeURIComponent(collectionId)}/${encodeURIComponent(docId)}`,
+    {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${firebaseIdToken}`,
+      },
+      body: JSON.stringify({ fields: toFirestoreFields(data) }),
+    }
+  );
+  if (!res.ok) {
+    const txt = await res.text().catch(() => '');
+    throw new Error(`Firestore write ${collectionId}/${docId} failed (${res.status}): ${txt.slice(0, 200)}`);
+  }
+}
+
+async function deleteFirestoreDoc(
+  collectionId: string,
+  docId: string,
+  firebaseIdToken: string
+): Promise<void> {
+  const res = await fetch(
+    `${FIRESTORE_REST_BASE}/${encodeURIComponent(collectionId)}/${encodeURIComponent(docId)}`,
+    {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${firebaseIdToken}` },
+    }
+  );
+  if (!res.ok && res.status !== 404) {
+    const txt = await res.text().catch(() => '');
+    throw new Error(`Firestore delete ${collectionId}/${docId} failed (${res.status}): ${txt.slice(0, 200)}`);
+  }
+}
+
+async function hydrateStoreFromFirestore(forceAdmin = false, firebaseIdToken?: string): Promise<void> {
+  const current = storeCache || {};
+  try {
+    const [prodRes, catRes, colRes, revRes, setRes] = await Promise.allSettled([
+      forceAdmin && firebaseIdToken
+        ? listFirestoreCollection('products', firebaseIdToken)
+        : runFirestorePublishedProductsQuery(firebaseIdToken),
+      listFirestoreCollection('categories', firebaseIdToken),
+      listFirestoreCollection('collections', firebaseIdToken),
+      listFirestoreCollection('reviews', firebaseIdToken),
+      getFirestoreDoc('settings', 'store_config', firebaseIdToken),
+    ]);
+
+    if (prodRes.status === 'fulfilled') {
+      lastFirestoreHydrationError = null;
+      lastFirestoreHydrationAt = Date.now();
+      const existing = Array.isArray(current.products) ? current.products : [];
+      if (forceAdmin && firebaseIdToken) {
+        // Authoritative full product catalog when queried with verified admin token
+        current.products = prodRes.value;
+      } else {
+        // Authoritative Published catalog from Firestore, while preserving non-published drafts in warm cache
+        const remotePublishedIds = new Set(prodRes.value.map((p) => p.id));
+        const keptDrafts = existing.filter(
+          (p) => p && typeof p.id === 'string' && p.status !== 'Published' && !remotePublishedIds.has(p.id)
+        );
+        current.products = [...prodRes.value, ...keptDrafts];
+      }
+    } else {
+      lastFirestoreHydrationError =
+        prodRes.reason instanceof Error ? prodRes.reason.message : 'Unable to query Firestore catalog.';
+    }
+
+    if (catRes.status === 'fulfilled' && catRes.value.length > 0) {
+      current.categories = catRes.value;
+    }
+    if (colRes.status === 'fulfilled' && colRes.value.length > 0) {
+      current.collections = colRes.value;
+    }
+    if (revRes.status === 'fulfilled' && revRes.value.length > 0) {
+      const revMap = new Map<string, StoreRecord>();
+      for (const r of Array.isArray(current.reviews) ? current.reviews : []) {
+        if (r && typeof r.id === 'string') revMap.set(r.id, r);
+      }
+      for (const r of revRes.value) {
+        if (r && typeof r.id === 'string') revMap.set(r.id, r);
+      }
+      current.reviews = Array.from(revMap.values());
+    }
+    if (setRes.status === 'fulfilled' && setRes.value) {
+      current.settings = { ...(current.settings || {}), ...setRes.value };
+    }
+
+    if (forceAdmin && firebaseIdToken) {
+      const [ordRes, coupRes] = await Promise.allSettled([
+        listFirestoreCollection('orders', firebaseIdToken),
+        listFirestoreCollection('coupons', firebaseIdToken),
+      ]);
+      if (ordRes.status === 'fulfilled') {
+        const ordMap = new Map<string, StoreRecord>();
+        for (const o of Array.isArray(current.orders) ? current.orders : []) {
+          if (o && typeof o.id === 'string') ordMap.set(o.id, o);
+        }
+        for (const o of ordRes.value) {
+          if (o && typeof o.id === 'string') ordMap.set(o.id, o);
+        }
+        current.orders = Array.from(ordMap.values());
+      }
+      if (coupRes.status === 'fulfilled' && coupRes.value.length > 0) {
+        current.coupons = coupRes.value;
+      }
+    }
+
+    storeCache = current;
+    if (prodRes.status === 'fulfilled') {
+      await saveStore(current).catch(() => {});
+    }
+  } catch (err) {
+    lastFirestoreHydrationError = err instanceof Error ? err.message : 'Unable to hydrate Firestore store.';
+  }
+}
+
+async function loadStore(forceRefresh = false): Promise<PersistedStore> {
+  if (!storeCache) {
+    try {
+      const raw = await fs.readFile(DATA_FILE, 'utf8');
+      storeCache = JSON.parse(raw) as PersistedStore;
+    } catch {
+      storeCache = {};
+    }
+  }
+  const hasCachedProducts = Array.isArray(storeCache.products) && storeCache.products.length > 0;
+  const cacheExpired = Date.now() - lastFirestoreHydrationAt > FIRESTORE_SYNC_TTL_MS;
+  if (forceRefresh || !hasCachedProducts || cacheExpired) {
+    if (!firestoreHydrationPromise) {
+      firestoreHydrationPromise = hydrateStoreFromFirestore(false).finally(() => {
+        firestoreHydrationPromise = null;
+      });
+    }
+    await firestoreHydrationPromise;
+  }
+  return storeCache || {};
 }
 
 async function saveStore(next: PersistedStore): Promise<void> {
@@ -205,7 +596,11 @@ function isSafeMediaUrl(value: unknown): value is string {
   if (/[<>"]/.test(trimmed) || /%3C|%3E|%22/i.test(trimmed)) return false;
   if (/^https?:\/\/ibb\.co\.com\/JwC1M9WR\/?$/i.test(trimmed)) return false;
   if (/^(javascript|vbscript|data|file):/i.test(trimmed)) return false;
-  if (trimmed.startsWith('/uploads/') || trimmed.startsWith('/assets/')) {
+  if (
+    trimmed.startsWith('/uploads/') ||
+    trimmed.startsWith('/api/media/') ||
+    trimmed.startsWith('/assets/')
+  ) {
     return !trimmed.includes('..');
   }
   try {
@@ -375,29 +770,113 @@ function verifySignedAdminToken(token: string | undefined): boolean {
   }
 }
 
+const verifiedFirebaseAdminTokens = new Map<string, number>();
+
+function getJwtExpirationMs(idToken: string): number {
+  try {
+    const parts = idToken.split('.');
+    if (parts.length !== 3) return 0;
+    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8')) as {
+      exp?: number;
+      aud?: string;
+    };
+    if (payload.aud && payload.aud !== FIRESTORE_PROJECT_ID) return 0;
+    return typeof payload.exp === 'number' ? payload.exp * 1000 : 0;
+  } catch {
+    return 0;
+  }
+}
+
+async function verifyFirebaseAdminToken(idToken: string): Promise<boolean> {
+  if (!idToken || idToken.length < 40 || !FIREBASE_API_KEY) return false;
+  const now = Date.now();
+  const expMs = getJwtExpirationMs(idToken);
+  if (expMs && expMs <= now) return false;
+
+  const cacheKey = crypto.createHash('sha256').update(idToken).digest('hex');
+  const cachedUntil = verifiedFirebaseAdminTokens.get(cacheKey);
+  if (cachedUntil && cachedUntil > now) {
+    return true;
+  }
+  if (cachedUntil) {
+    verifiedFirebaseAdminTokens.delete(cacheKey);
+  }
+
+  try {
+    const res = await fetch(
+      `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${encodeURIComponent(FIREBASE_API_KEY)}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken }),
+      }
+    );
+    if (!res.ok) return false;
+    const data = (await res.json()) as {
+      users?: {
+        email?: string;
+        emailVerified?: boolean;
+        disabled?: boolean;
+      }[];
+    };
+    const user = Array.isArray(data.users) ? data.users[0] : undefined;
+    if (
+      !user ||
+      user.disabled ||
+      !user.emailVerified ||
+      !AUTHORIZED_ADMIN_EMAILS.has((user.email || '').toLowerCase())
+    ) {
+      return false;
+    }
+
+    if (verifiedFirebaseAdminTokens.size > 200) {
+      for (const [k, expiresAt] of verifiedFirebaseAdminTokens.entries()) {
+        if (expiresAt <= now) verifiedFirebaseAdminTokens.delete(k);
+      }
+      if (verifiedFirebaseAdminTokens.size > 200) {
+        verifiedFirebaseAdminTokens.clear();
+      }
+    }
+    const maxCacheMs = Math.min(5 * 60 * 1000, expMs ? Math.max(10_000, expMs - now) : 5 * 60 * 1000);
+    verifiedFirebaseAdminTokens.set(cacheKey, now + maxCacheMs);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function normalizeHostHeader(value: string): string {
   return value.trim().toLowerCase().replace(/:(80|443)$/, '');
 }
 
 function isSameOriginMutation(req: Request): boolean {
-  const rawHost = req.get('x-forwarded-host') || req.get('host');
-  if (!rawHost) return false;
-  const host = normalizeHostHeader(rawHost.split(',')[0]);
   const origin = req.get('origin');
   const referer = req.get('referer');
   const candidate = origin || referer;
   if (!candidate) return false;
   try {
     const parsed = new URL(candidate);
+    const candidateOrigin = parsed.origin.toLowerCase();
+    if (TRUSTED_PUBLIC_ORIGINS.has(candidateOrigin)) {
+      return true;
+    }
+    const rawHost = req.get('x-forwarded-host') || req.get('host');
+    if (!rawHost) return false;
+    const host = normalizeHostHeader(rawHost.split(',')[0]);
     return normalizeHostHeader(parsed.host) === host;
   } catch {
     return false;
   }
 }
 
-function isAdminRequestAuthenticated(req: Request): boolean {
+async function isAdminRequestAuthenticated(req: Request): Promise<boolean> {
   const headerToken = req.headers['x-admin-session'];
   if (typeof headerToken === 'string' && verifySignedAdminToken(headerToken)) {
+    return true;
+  }
+
+  const firebaseToken = getFirebaseIdTokenFromReq(req);
+  if (firebaseToken && (await verifyFirebaseAdminToken(firebaseToken))) {
     return true;
   }
 
@@ -685,13 +1164,27 @@ async function startServer() {
   app.set('trust proxy', 1);
   app.disable('x-powered-by');
 
-  // Security headers (preserving iframe preview compatibility by avoiding X-Frame-Options/frame-ancestors)
-  app.use((_req, res, next) => {
+  // Allowlisted CORS for authorized custom domains (pythoxworld.com, pythoxworld.netlify.app) + security headers
+  app.use((req, res, next) => {
+    const reqOrigin = normalizeOrigin(String(req.headers.origin || ''));
+    if (reqOrigin && TRUSTED_PUBLIC_ORIGINS.has(reqOrigin)) {
+      res.setHeader('Access-Control-Allow-Origin', reqOrigin);
+      res.setHeader('Vary', 'Origin');
+      res.setHeader('Access-Control-Allow-Credentials', 'true');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+      res.setHeader(
+        'Access-Control-Allow-Headers',
+        'Content-Type, X-Admin-Session, X-Firebase-Id-Token'
+      );
+    }
+    if (req.method === 'OPTIONS') {
+      return res.status(204).end();
+    }
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
     res.setHeader(
       'Permissions-Policy',
-      'camera=(self), microphone=(), geolocation=(), payment=(), usb=()'
+      'camera=(self), microphone=(), geolocation=(self), payment=(), usb=()'
     );
     next();
   });
@@ -705,7 +1198,7 @@ async function startServer() {
       setHeaders: (res) => {
         res.setHeader('X-Content-Type-Options', 'nosniff');
         res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
-        res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+        res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
       },
     })
   );
@@ -755,11 +1248,219 @@ async function startServer() {
     res.json({ mapsApiKey });
   });
 
+  // Durable Media Asset Delivery Endpoint (serves local warm cache OR hydrates permanently from Firestore media_assets)
+  app.get('/api/media/:id', async (req, res) => {
+    const cleanId = sanitizeSafeId(req.params.id);
+    if (!cleanId) {
+      return res.status(400).json({ error: 'Invalid media ID.' });
+    }
+
+    const mimeByExt: Record<string, string> = {
+      '.webp': 'image/webp',
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.png': 'image/png',
+    };
+    const extByMime: Record<string, string> = {
+      'image/webp': '.webp',
+      'image/jpeg': '.jpg',
+      'image/png': '.png',
+    };
+
+    try {
+      const files = await fs.readdir(UPLOADS_DIR).catch(() => [] as string[]);
+      const localMatch = files.find((f) => f === cleanId || f.startsWith(`${cleanId}.`));
+      if (localMatch) {
+        const buf = await fs.readFile(path.join(UPLOADS_DIR, localMatch));
+        const ext = path.extname(localMatch).toLowerCase();
+        res.setHeader('Content-Type', mimeByExt[ext] || 'image/jpeg');
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+        return res.send(buf);
+      }
+
+      const asset = await getFirestoreDoc('media_assets', cleanId);
+      if (!asset || typeof asset.dataBase64 !== 'string') {
+        return res.status(404).send('Media asset not found.');
+      }
+
+      const buf = Buffer.from(asset.dataBase64, 'base64');
+      const mimeType =
+        typeof asset.mimeType === 'string' && extByMime[asset.mimeType]
+          ? asset.mimeType
+          : 'image/jpeg';
+      const ext = extByMime[mimeType] || '.jpg';
+
+      await fs.mkdir(UPLOADS_DIR, { recursive: true }).catch(() => {});
+      await fs.writeFile(path.join(UPLOADS_DIR, `${cleanId}${ext}`), buf).catch(() => {});
+
+      res.setHeader('Content-Type', mimeType);
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+      return res.send(buf);
+    } catch (err) {
+      console.error('Media fetch error:', err instanceof Error ? err.message : err);
+      return res.status(503).json({ error: 'Unable to load media asset right now.' });
+    }
+  });
+
+  // Server-side Google Maps Geocoding & Reverse Geocoding Proxy (never exposes key in REST query on client)
+  const geocodeLimiter = createRateLimiter(
+    45,
+    5 * 60 * 1000,
+    'Too many address lookup requests. Please wait a moment.'
+  );
+
+  function extractMapsAddressParts(result: {
+    formatted_address?: string;
+    geometry?: { location?: { lat?: number; lng?: number } };
+    address_components?: { long_name?: string; types?: string[] }[];
+  }) {
+    const components = Array.isArray(result.address_components) ? result.address_components : [];
+    let city = '';
+    let area = '';
+    let postalCode = '';
+    for (const comp of components) {
+      const types = Array.isArray(comp.types) ? comp.types : [];
+      if (!city && (types.includes('locality') || types.includes('administrative_area_level_2'))) {
+        city = comp.long_name || '';
+      }
+      if (
+        !area &&
+        (types.includes('sublocality_level_1') ||
+          types.includes('sublocality') ||
+          types.includes('neighborhood'))
+      ) {
+        area = comp.long_name || '';
+      }
+      if (!postalCode && types.includes('postal_code')) {
+        postalCode = comp.long_name || '';
+      }
+    }
+    const lat = Number(result.geometry?.location?.lat);
+    const lng = Number(result.geometry?.location?.lng);
+    return {
+      formattedAddress: result.formatted_address || '',
+      city,
+      area: area || city,
+      postalCode,
+      location: Number.isFinite(lat) && Number.isFinite(lng) ? { lat, lng } : null,
+    };
+  }
+
+  app.get('/api/maps/geocode', geocodeLimiter, async (req, res) => {
+    const address = String(req.query.address || '').trim().slice(0, 300);
+    if (address.length < 2) {
+      return res.status(400).json({ error: 'Valid address is required for geocoding.' });
+    }
+    const mapsKey =
+      process.env.VITE_GOOGLE_MAPS_API_KEY ||
+      process.env.GOOGLE_MAPS_API_KEY ||
+      '';
+    if (!mapsKey) {
+      return res.status(503).json({ error: 'Geocoding service is not configured.' });
+    }
+    try {
+      const fetchGeo = async (withCountryFilter: boolean) => {
+        const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(
+          address
+        )}&region=bd${withCountryFilter ? '&components=country:BD' : ''}&key=${encodeURIComponent(mapsKey)}`;
+        const geoRes = await fetch(url);
+        return (await geoRes.json()) as {
+          status?: string;
+          error_message?: string;
+          results?: {
+            formatted_address?: string;
+            geometry?: { location?: { lat?: number; lng?: number } };
+            address_components?: { long_name?: string; types?: string[] }[];
+          }[];
+        };
+      };
+
+      let data = await fetchGeo(true);
+      if (data.status === 'ZERO_RESULTS') {
+        data = await fetchGeo(false);
+      }
+
+      if (data.status === 'OVER_QUERY_LIMIT' || data.status === 'RESOURCE_EXHAUSTED') {
+        return res.status(429).json({ error: 'RESOURCE_EXHAUSTED', status: data.status });
+      }
+      if (data.status === 'REQUEST_DENIED') {
+        return res.status(502).json({ error: data.error_message || 'Geocoding request denied.' });
+      }
+      const top = Array.isArray(data.results) ? data.results[0] : undefined;
+      if (!top) {
+        return res.status(404).json({ error: 'Address could not be matched on map.' });
+      }
+      const parsed = extractMapsAddressParts(top);
+      if (!parsed.location) {
+        return res.status(404).json({ error: 'Coordinates unavailable for this address.' });
+      }
+      return res.json(parsed);
+    } catch (err) {
+      console.error('Geocode proxy error:', err instanceof Error ? err.message : err);
+      return res.status(502).json({ error: 'Unable to geocode address right now.' });
+    }
+  });
+
+  app.get('/api/maps/reverse-geocode', geocodeLimiter, async (req, res) => {
+    const lat = Number(req.query.lat);
+    const lng = Number(req.query.lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+      return res.status(400).json({ error: 'Valid lat and lng coordinates are required.' });
+    }
+    const mapsKey =
+      process.env.VITE_GOOGLE_MAPS_API_KEY ||
+      process.env.GOOGLE_MAPS_API_KEY ||
+      '';
+    if (!mapsKey) {
+      return res.status(503).json({ error: 'Reverse geocoding service is not configured.' });
+    }
+    try {
+      const url = `https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&key=${encodeURIComponent(
+        mapsKey
+      )}`;
+      const geoRes = await fetch(url);
+      const data = (await geoRes.json()) as {
+        status?: string;
+        error_message?: string;
+        results?: {
+          formatted_address?: string;
+          geometry?: { location?: { lat?: number; lng?: number } };
+          address_components?: { long_name?: string; types?: string[] }[];
+        }[];
+      };
+      if (data.status === 'OVER_QUERY_LIMIT' || data.status === 'RESOURCE_EXHAUSTED') {
+        return res.status(429).json({ error: 'RESOURCE_EXHAUSTED', status: data.status });
+      }
+      const top = Array.isArray(data.results) ? data.results[0] : undefined;
+      if (!top) {
+        return res.status(404).json({ error: 'No street address found at selected pin.' });
+      }
+      const parsed = extractMapsAddressParts(top);
+      return res.json({
+        ...parsed,
+        location: { lat, lng },
+      });
+    } catch (err) {
+      console.error('Reverse geocode error:', err instanceof Error ? err.message : err);
+      return res.status(502).json({ error: 'Unable to resolve selected pin address.' });
+    }
+  });
+
   // Public Storefront Catalog & Settings (returns ONLY Admin-published products; excludes orders PII & private coupon list)
   app.get('/api/store', async (_req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     const store = await loadStore();
     const allStoredProducts = Array.isArray(store.products) ? store.products : [];
+    if (allStoredProducts.length === 0 && lastFirestoreHydrationError) {
+      return res.status(503).json({
+        connected: false,
+        error: 'Unable to load products. Please try again.',
+      });
+    }
     const publishedProducts = allStoredProducts.filter(
       (p) => p.status === 'Published'
     );
@@ -778,6 +1479,12 @@ async function startServer() {
     res.setHeader('Cache-Control', 'no-store');
     const store = await loadStore();
     const allStoredProducts = Array.isArray(store.products) ? store.products : [];
+    if (allStoredProducts.length === 0 && lastFirestoreHydrationError) {
+      return res.status(503).json({
+        connected: false,
+        error: 'Unable to load products. Please try again.',
+      });
+    }
     let publishedProducts = allStoredProducts.filter(
       (p) => p.status === 'Published'
     );
@@ -1272,7 +1979,7 @@ async function startServer() {
     return res.status(201).json({ review: savedReview });
   });
 
-  // Server-side Password-Only Admin Session Verification & Authentication
+  // Server-side Admin Session Verification & Authentication (Password or Verified Google Admin)
   app.get('/api/admin/session', async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     const store = await loadStore();
@@ -1280,7 +1987,7 @@ async function startServer() {
     if (setupRequired) {
       return res.json({ authenticated: false, setupRequired: true });
     }
-    const authed = isAdminRequestAuthenticated(req);
+    const authed = await isAdminRequestAuthenticated(req);
     if (!authed) {
       return res.json({ authenticated: false, setupRequired: false });
     }
@@ -1398,7 +2105,7 @@ async function startServer() {
   // Admin-Protected Store Management Endpoints
   app.get('/api/admin/orders', async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
-    if (!isAdminRequestAuthenticated(req)) {
+    if (!(await isAdminRequestAuthenticated(req))) {
       return res.status(401).json({ error: 'Unauthorized admin session.' });
     }
     const store = await loadStore();
@@ -1414,10 +2121,21 @@ async function startServer() {
 
   app.get('/api/admin/catalog', async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
-    if (!isAdminRequestAuthenticated(req)) {
+    if (!(await isAdminRequestAuthenticated(req))) {
       return res.status(401).json({ error: 'Unauthorized admin session.' });
     }
-    const store = await loadStore();
+    const firebaseToken = getFirebaseIdTokenFromReq(req);
+    let store = await loadStore();
+    if (
+      firebaseToken &&
+      (await verifyFirebaseAdminToken(firebaseToken)) &&
+      (!Array.isArray(store.products) ||
+        store.products.length === 0 ||
+        Date.now() - lastFirestoreHydrationAt > 10_000)
+    ) {
+      await hydrateStoreFromFirestore(true, firebaseToken);
+      store = await loadStore();
+    }
     return res.json({
       products: Array.isArray(store.products) ? store.products : [],
       categories: store.categories,
@@ -1429,7 +2147,7 @@ async function startServer() {
   });
 
   app.patch('/api/admin/orders/:id', async (req, res) => {
-    if (!isAdminRequestAuthenticated(req)) {
+    if (!(await isAdminRequestAuthenticated(req))) {
       return res.status(401).json({ error: 'Unauthorized admin session.' });
     }
     const orderId = sanitizeSafeId(req.params.id);
@@ -1514,7 +2232,7 @@ async function startServer() {
 
   // Admin Real Media Upload Endpoint (Images up to 10MB, Videos up to 50MB + Magic Byte Verification)
   app.post('/api/admin/upload-media', async (req, res) => {
-    if (!isAdminRequestAuthenticated(req)) {
+    if (!(await isAdminRequestAuthenticated(req))) {
       return res.status(401).json({ error: 'Unauthorized admin session.' });
     }
 
@@ -1531,6 +2249,17 @@ async function startServer() {
     const originalExt = path.extname(rawFilename).toLowerCase();
 
     const isImage = kind === 'image';
+    const firebaseToken = getFirebaseIdTokenFromReq(req);
+    if (isImage) {
+      if (!firebaseToken || !(await verifyFirebaseAdminToken(firebaseToken))) {
+        return res.status(403).json({
+          code: 'FIREBASE_AUTH_REQUIRED',
+          error:
+            'Google Admin sign-in (lord79915@gmail.com or pythoxfashion@gmail.com) is required to upload product images permanently to Cloud Storage.',
+        });
+      }
+    }
+
     const maxBytes = isImage ? MAX_IMAGE_BYTES : MAX_VIDEO_BYTES;
     const allowedExts = isImage ? ALLOWED_IMAGE_EXTS : ALLOWED_VIDEO_EXTS;
     const mimeMap = isImage ? IMAGE_MIME_EXT : VIDEO_MIME_EXT;
@@ -1638,9 +2367,71 @@ async function startServer() {
           }
 
           await fs.rename(tempPath, finalPath);
+
+          // Mirror images <= 700 KB directly into Firestore media_assets (never leave product images only on ephemeral disk)
+          let resolvedUrl = `/uploads/${finalName}`;
+          let persistent = false;
+
+          if (isImage) {
+            if (receivedBytes > 700 * 1024) {
+              await fs.unlink(finalPath).catch(() => {});
+              if (!res.headersSent) {
+                res.status(413).json({
+                  error: 'Compressed image exceeds 700 KB Cloud Storage limit. Please use a smaller image.',
+                });
+              }
+              return;
+            }
+            if (!firebaseToken) {
+              await fs.unlink(finalPath).catch(() => {});
+              if (!res.headersSent) {
+                res.status(403).json({
+                  code: 'FIREBASE_AUTH_REQUIRED',
+                  error: 'Google Admin sign-in is required to persist uploaded images.',
+                });
+              }
+              return;
+            }
+            try {
+              const fileBuf = await fs.readFile(finalPath);
+              const normalizedMime =
+                rawMime === 'image/png' || rawMime === 'image/x-png' || resolvedExt === '.png'
+                  ? 'image/png'
+                  : rawMime === 'image/webp' || resolvedExt === '.webp'
+                    ? 'image/webp'
+                    : 'image/jpeg';
+              const mediaDoc = {
+                id: fileId,
+                kind: 'image',
+                mimeType: normalizedMime,
+                filename: finalName.slice(0, 160),
+                sizeBytes: fileBuf.length,
+                dataBase64: fileBuf.toString('base64'),
+                createdAt: new Date().toISOString(),
+              };
+              await upsertFirestoreDoc('media_assets', fileId, mediaDoc, firebaseToken);
+              resolvedUrl = `/api/media/${fileId}`;
+              persistent = true;
+            } catch (fsErr) {
+              await fs.unlink(finalPath).catch(() => {});
+              console.error('Firestore media_assets persist failed:', fsErr instanceof Error ? fsErr.message : fsErr);
+              if (!res.headersSent) {
+                res.status(502).json({
+                  error:
+                    fsErr instanceof Error
+                      ? `Failed to save image permanently to Cloud Storage: ${fsErr.message}`
+                      : 'Failed to save image permanently to Cloud Storage.',
+                });
+              }
+              return;
+            }
+          }
+
           if (!res.headersSent) {
             res.status(201).json({
-              url: `/uploads/${finalName}`,
+              url: resolvedUrl,
+              mediaId: fileId,
+              persistent,
               filename: finalName,
               size: receivedBytes,
               mimeType: rawMime || 'application/octet-stream',
@@ -1658,9 +2449,18 @@ async function startServer() {
   });
 
   app.post('/api/admin/products', async (req, res) => {
-    if (!isAdminRequestAuthenticated(req)) {
+    if (!(await isAdminRequestAuthenticated(req))) {
       return res.status(401).json({ error: 'Unauthorized admin session.' });
     }
+    const firebaseToken = getFirebaseIdTokenFromReq(req);
+    if (!firebaseToken || !(await verifyFirebaseAdminToken(firebaseToken))) {
+      return res.status(403).json({
+        code: 'FIREBASE_AUTH_REQUIRED',
+        error:
+          'Google Admin sign-in (lord79915@gmail.com or pythoxfashion@gmail.com) is required so uploaded products save permanently to Firestore.',
+      });
+    }
+
     const { product } = (req.body || {}) as {
       product?: StoreRecord;
     };
@@ -1687,24 +2487,29 @@ async function startServer() {
     const cleanDescription =
       typeof product.description === 'string' ? product.description.trim().slice(0, 5000) : '';
     const cleanSizes = Array.isArray(product.sizes)
-      ? product.sizes.map((s) => String(s).trim().slice(0, 20)).filter(Boolean)
+      ? Array.from(new Set(product.sizes.map((s) => String(s).trim().slice(0, 20)).filter(Boolean))).slice(0, 20)
       : [];
     const cleanColors = Array.isArray(product.colors)
-      ? product.colors.filter(
-          (c): c is { name: string; hex: string } =>
-            Boolean(c) &&
-            typeof c === 'object' &&
-            typeof (c as { name?: unknown }).name === 'string' &&
-            Boolean((c as { name: string }).name.trim())
-        )
+      ? product.colors
+          .filter(
+            (c): c is { name: string; hex: string } =>
+              Boolean(c) &&
+              typeof c === 'object' &&
+              typeof (c as { name?: unknown }).name === 'string' &&
+              Boolean((c as { name: string }).name.trim())
+          )
+          .slice(0, 20)
       : [];
     const cleanImages = Array.isArray(product.images)
-      ? product.images.map((img) => String(img).trim()).filter(isSafeMediaUrl)
+      ? product.images
+          .map((img) => String(img).trim())
+          .filter((u) => isSafeMediaUrl(u) && !u.startsWith('/uploads/'))
+          .slice(0, 20)
       : [];
     const cleanTags = Array.isArray(product.tags)
       ? Array.from(
           new Set(product.tags.map((t) => String(t).trim().slice(0, 40)).filter(Boolean))
-        )
+        ).slice(0, 30)
       : [];
 
     const allowedStatuses = new Set(['Draft', 'Published', 'Unpublished', 'Out of Stock']);
@@ -1744,7 +2549,9 @@ async function startServer() {
       return res.status(400).json({ error: 'Product Description is required.' });
     }
     if (cleanImages.length === 0) {
-      return res.status(400).json({ error: 'Upload at least one valid product image.' });
+      return res.status(400).json({
+        error: 'Upload at least one permanent product image (temporary /uploads/ URLs are not permitted).',
+      });
     }
 
     const rawPrimary =
@@ -1754,7 +2561,7 @@ async function startServer() {
     const orderedImages = [
       primaryImage,
       ...cleanImages.filter((url) => url !== primaryImage),
-    ];
+    ].slice(0, 20);
     const cleanVideoUrl =
       typeof product.videoUrl === 'string' && isSafeMediaUrl(product.videoUrl)
         ? product.videoUrl.trim()
@@ -1787,7 +2594,7 @@ async function startServer() {
         : undefined;
 
     const cleanFeatures = Array.isArray(product.features)
-      ? product.features.map((f) => String(f).trim().slice(0, 160)).filter(Boolean)
+      ? product.features.map((f) => String(f).trim().slice(0, 160)).filter(Boolean).slice(0, 20)
       : [];
 
     const cleanAdditionalCategories = Array.isArray(product.additionalCategories)
@@ -1835,7 +2642,7 @@ async function startServer() {
           ? product.care_instructions.trim().slice(0, 300)
           : '',
       features: cleanFeatures,
-      sizes: Array.from(new Set(cleanSizes)),
+      sizes: cleanSizes,
       colors: cleanColors.map((c) => ({
         name: c.name.trim().slice(0, 40),
         hex:
@@ -1855,21 +2662,60 @@ async function startServer() {
 
     const store = await loadStore();
     const base = Array.isArray(store.products) ? store.products : [];
-    const exists = base.some((p) => p.id === normalizedProduct.id);
-    const nextProducts = exists
+    const existingLocal = base.find((p) => p.id === normalizedProduct.id);
+    if (existingLocal && typeof existingLocal.created_at === 'string' && existingLocal.created_at) {
+      normalizedProduct.created_at = existingLocal.created_at;
+    }
+
+    try {
+      const existingRemote = await getFirestoreDoc('products', cleanId, firebaseToken);
+      if (existingRemote && typeof existingRemote.created_at === 'string' && existingRemote.created_at) {
+        normalizedProduct.created_at = existingRemote.created_at;
+      }
+      await upsertFirestoreDoc('products', cleanId, normalizedProduct, firebaseToken);
+      lastFirestoreHydrationAt = Date.now();
+    } catch (err) {
+      console.error('Firestore product persist error:', err instanceof Error ? err.message : err);
+      return res.status(502).json({
+        error:
+          err instanceof Error
+            ? `Failed to persist product in cloud database: ${err.message}`
+            : 'Failed to persist product in cloud database.',
+      });
+    }
+
+    const nextProducts = existingLocal
       ? base.map((p) => (p.id === normalizedProduct.id ? normalizedProduct : p))
       : [normalizedProduct, ...base];
     await saveStore({ ...store, products: nextProducts });
-    return res.json({ ok: true, product: normalizedProduct });
+    return res.json({ ok: true, product: normalizedProduct, persistedToCloud: true });
   });
 
   app.delete('/api/admin/products/:id', async (req, res) => {
-    if (!isAdminRequestAuthenticated(req)) {
+    if (!(await isAdminRequestAuthenticated(req))) {
       return res.status(401).json({ error: 'Unauthorized admin session.' });
     }
     const cleanId = sanitizeSafeId(req.params.id);
     if (!cleanId) {
       return res.status(400).json({ error: 'Invalid product ID.' });
+    }
+    const firebaseToken = getFirebaseIdTokenFromReq(req);
+    if (!firebaseToken || !(await verifyFirebaseAdminToken(firebaseToken))) {
+      return res.status(403).json({
+        code: 'FIREBASE_AUTH_REQUIRED',
+        error: 'Google Admin sign-in is required to permanently delete products from Firestore.',
+      });
+    }
+    try {
+      await deleteFirestoreDoc('products', cleanId, firebaseToken);
+      lastFirestoreHydrationAt = Date.now();
+    } catch (err) {
+      return res.status(502).json({
+        error:
+          err instanceof Error
+            ? `Failed to remove product from cloud database: ${err.message}`
+            : 'Failed to remove product from cloud database.',
+      });
     }
     const store = await loadStore();
     const current = Array.isArray(store.products) ? store.products : [];
@@ -1881,7 +2727,7 @@ async function startServer() {
   });
 
   app.post('/api/admin/categories', async (req, res) => {
-    if (!isAdminRequestAuthenticated(req)) {
+    if (!(await isAdminRequestAuthenticated(req))) {
       return res.status(401).json({ error: 'Unauthorized admin session.' });
     }
     const { category, allCategories } = (req.body || {}) as {
@@ -1907,7 +2753,7 @@ async function startServer() {
   });
 
   app.put('/api/admin/categories/batch', async (req, res) => {
-    if (!isAdminRequestAuthenticated(req)) {
+    if (!(await isAdminRequestAuthenticated(req))) {
       return res.status(401).json({ error: 'Unauthorized admin session.' });
     }
     const { categories } = (req.body || {}) as { categories?: unknown[] };
@@ -1926,7 +2772,7 @@ async function startServer() {
   });
 
   app.delete('/api/admin/categories/:id', async (req, res) => {
-    if (!isAdminRequestAuthenticated(req)) {
+    if (!(await isAdminRequestAuthenticated(req))) {
       return res.status(401).json({ error: 'Unauthorized admin session.' });
     }
     const cleanId = sanitizeSafeId(req.params.id);
@@ -1948,7 +2794,7 @@ async function startServer() {
   });
 
   app.post('/api/admin/collections', async (req, res) => {
-    if (!isAdminRequestAuthenticated(req)) {
+    if (!(await isAdminRequestAuthenticated(req))) {
       return res.status(401).json({ error: 'Unauthorized admin session.' });
     }
     const { collection: col, allCollections } = (req.body || {}) as {
@@ -1974,7 +2820,7 @@ async function startServer() {
   });
 
   app.post('/api/admin/coupons', async (req, res) => {
-    if (!isAdminRequestAuthenticated(req)) {
+    if (!(await isAdminRequestAuthenticated(req))) {
       return res.status(401).json({ error: 'Unauthorized admin session.' });
     }
     const { coupon, allCoupons } = (req.body || {}) as {
@@ -2000,7 +2846,7 @@ async function startServer() {
   });
 
   app.delete('/api/admin/coupons/:id', async (req, res) => {
-    if (!isAdminRequestAuthenticated(req)) {
+    if (!(await isAdminRequestAuthenticated(req))) {
       return res.status(401).json({ error: 'Unauthorized admin session.' });
     }
     const cleanId = sanitizeSafeId(req.params.id);
@@ -2018,7 +2864,7 @@ async function startServer() {
   });
 
   app.put('/api/admin/settings', async (req, res) => {
-    if (!isAdminRequestAuthenticated(req)) {
+    if (!(await isAdminRequestAuthenticated(req))) {
       return res.status(401).json({ error: 'Unauthorized admin session.' });
     }
     const nextSettings = req.body as Record<string, unknown> | undefined;
@@ -2027,12 +2873,25 @@ async function startServer() {
     }
     const store = await loadStore();
     const sanitized = sanitizeSettingsRecord(nextSettings, store.settings);
+    const firebaseToken = getFirebaseIdTokenFromReq(req);
+    if (firebaseToken) {
+      try {
+        await upsertFirestoreDoc('settings', 'store_config', sanitized, firebaseToken);
+      } catch (err) {
+        return res.status(502).json({
+          error:
+            err instanceof Error
+              ? `Failed to save settings to cloud database: ${err.message}`
+              : 'Failed to save settings to cloud database.',
+        });
+      }
+    }
     await saveStore({ ...store, settings: sanitized });
     return res.json({ ok: true, settings: sanitized });
   });
 
   app.post('/api/admin/sync-catalog', async (req, res) => {
-    if (!isAdminRequestAuthenticated(req)) {
+    if (!(await isAdminRequestAuthenticated(req))) {
       return res.status(401).json({ error: 'Unauthorized admin session.' });
     }
     const payload = (req.body || {}) as PersistedStore;
@@ -2200,7 +3059,7 @@ async function startServer() {
 
   // Admin Product Copy Generator (Protected by server-side admin session)
   app.post('/api/admin/generate-copy', aiLimiter, async (req, res) => {
-    if (!isAdminRequestAuthenticated(req)) {
+    if (!(await isAdminRequestAuthenticated(req))) {
       return res.status(401).json({ error: 'Unauthorized admin session.' });
     }
     try {

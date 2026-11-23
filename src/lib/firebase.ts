@@ -10,7 +10,11 @@ import { doc, getDocFromServer, getFirestore } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 import firebaseConfig from '../../firebase-applet-config.json';
 
-export const ADMIN_EMAIL = 'lord79915@gmail.com';
+export const ADMIN_EMAILS = [
+  'lord79915@gmail.com',
+  'pythoxfashion@gmail.com',
+] as const;
+export const ADMIN_EMAIL = ADMIN_EMAILS[0];
 
 const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
@@ -89,18 +93,39 @@ export async function testConnection(): Promise<boolean> {
 
 export function isVerifiedAdminUser(user: User | null): boolean {
   if (!user || !user.emailVerified) return false;
-  return (user.email || '').toLowerCase() === ADMIN_EMAIL.toLowerCase();
+  const email = (user.email || '').toLowerCase();
+  return ADMIN_EMAILS.some((allowed) => allowed.toLowerCase() === email);
 }
 
 export async function signInAdminWithGoogle(): Promise<User> {
-  const credential = await signInWithPopup(auth, googleProvider);
-  if (!isVerifiedAdminUser(credential.user)) {
-    await signOut(auth);
-    throw new Error(
-      `Access denied. Sign in with the authorized administrator account (${ADMIN_EMAIL}).`
-    );
+  try {
+    const credential = await signInWithPopup(auth, googleProvider);
+    if (!isVerifiedAdminUser(credential.user)) {
+      await signOut(auth);
+      throw new Error(
+        `Access denied. Sign in with an authorized administrator account (${ADMIN_EMAILS.join(' or ')}).`
+      );
+    }
+    return credential.user;
+  } catch (err: unknown) {
+    const code = (err as { code?: string })?.code || '';
+    if (code === 'auth/unauthorized-domain') {
+      const host =
+        typeof window !== 'undefined' && window.location?.hostname
+          ? window.location.hostname
+          : 'this domain';
+      throw new Error(
+        `Unauthorized domain (${host}). Add "${host}" in Firebase Console -> Authentication -> Settings -> Authorized domains.`
+      );
+    }
+    if (code === 'auth/popup-blocked') {
+      throw new Error('Sign-in popup was blocked by your browser. Please allow popups and try again.');
+    }
+    if (code === 'auth/popup-closed-by-user') {
+      throw new Error('Google sign-in window was closed before completing authentication.');
+    }
+    throw err instanceof Error ? err : new Error('Unable to sign in with Google.');
   }
-  return credential.user;
 }
 
 export async function signOutAdmin(): Promise<void> {

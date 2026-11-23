@@ -41,7 +41,7 @@ export const ProductCard: React.FC<ProductCardProps> = ({
   const mainImage = product.primaryImage || product.images[0] || '';
 
   return (
-    <article className="group relative aspect-square rounded-2xl sm:rounded-3xl overflow-hidden bg-white border border-[#D9D9D9] navy-shadow transition-[transform,border-color,box-shadow] duration-250 ease-out [@media(hover:hover)]:hover:-translate-y-0.5 hover:border-[#0A0A0A]">
+    <article className="group relative aspect-[4/5] rounded-2xl sm:rounded-3xl overflow-hidden bg-white border border-[#D9D9D9] navy-shadow transition-[transform,border-color,box-shadow] duration-250 ease-out [@media(hover:hover)]:hover:-translate-y-0.5 hover:border-[#0A0A0A]">
       <Link
         to={`/product/${product.slug}`}
         className="block h-full w-full relative"

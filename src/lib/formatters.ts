@@ -74,6 +74,7 @@ export function sanitizeMediaUrl(raw?: string | null, fallback = ''): string {
   }
   if (
     value.startsWith('/uploads/') ||
+    value.startsWith('/api/media/') ||
     value.startsWith('/assets/') ||
     value.startsWith('/src/assets/')
   ) {

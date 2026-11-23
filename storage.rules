@@ -5,7 +5,7 @@ service firebase.storage {
     function isAdmin() {
       return request.auth != null
         && request.auth.token.email_verified == true
-        && request.auth.token.email == 'lord79915@gmail.com';
+        && request.auth.token.email in ['lord79915@gmail.com', 'pythoxfashion@gmail.com'];
     }
 
     match /products/{allPaths=**} {

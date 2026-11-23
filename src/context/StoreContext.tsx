@@ -13,6 +13,7 @@ import {
   deleteDoc,
   doc,
   getDoc,
+  getDocFromServer,
   onSnapshot,
   query,
   setDoc,
@@ -65,16 +66,18 @@ import {
 import {
   fetchAdminProductsCatalog,
   fetchPublicCatalog,
-  fetchPublishedProducts,
   mergeProductsByUpdatedAt,
+  verifyProductPersisted,
 } from '../services/productService';
 import { setMediaSessionToken } from '../services/mediaService';
+import { apiUrl } from '../lib/api';
 
 interface StoreContextValue {
   serverConnected: boolean;
   backendConnected: boolean;
   isFirebaseAdminLinked: boolean;
   productsLoading: boolean;
+  productsError: string | null;
   mapsApiKey: string;
   authReady: boolean;
   isAdminAuthenticated: boolean;
@@ -169,6 +172,27 @@ const WISHLIST_STORAGE_KEY = 'pythox_wishlist_v1';
 const RECENT_SEARCH_KEY = 'pythox_recent_searches_v1';
 const LOCAL_ORDERS_KEY = 'pythox_local_orders_v1';
 const LANGUAGE_STORAGE_KEY = 'pythox_lang_v1';
+const ADMIN_SESSION_STORAGE_KEY = 'pythox_admin_session_token_v1';
+
+function readSessionToken(): string {
+  try {
+    return sessionStorage.getItem(ADMIN_SESSION_STORAGE_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+function writeSessionToken(token: string): void {
+  try {
+    if (token) {
+      sessionStorage.setItem(ADMIN_SESSION_STORAGE_KEY, token);
+    } else {
+      sessionStorage.removeItem(ADMIN_SESSION_STORAGE_KEY);
+    }
+  } catch {
+    // ignore storage errors
+  }
+}
 
 function readStorage<T>(key: string, fallback: T): T {
   try {
@@ -337,7 +361,15 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
   const [adminUser, setAdminUser] = useState<User | null>(null);
   const [passwordAdminAuthed, setPasswordAdminAuthed] = useState(false);
   const [adminSetupRequired, setAdminSetupRequired] = useState(false);
-  const [adminSessionToken, setAdminSessionToken] = useState<string>('');
+  const [adminSessionToken, setAdminSessionTokenState] = useState<string>(() =>
+    readSessionToken()
+  );
+  const setAdminSessionToken = useCallback((token: string) => {
+    const clean = token || '';
+    writeSessionToken(clean);
+    setAdminSessionTokenState(clean);
+    setMediaSessionToken(clean);
+  }, []);
   const [mapsApiKey, setMapsApiKey] = useState<string>(
     (import.meta as any).env?.VITE_GOOGLE_MAPS_API_KEY || ''
   );
@@ -346,21 +378,25 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const [allProducts, setAllProducts] = useState<Product[]>([]);
   const [productsLoading, setProductsLoading] = useState<boolean>(true);
+  const [productsError, setProductsError] = useState<string | null>(null);
   const products = useMemo(
     () => allProducts.filter((p) => p.status === 'Published'),
     [allProducts]
-  );
-  const isAdminAuthenticated = useMemo(
-    () => Boolean(passwordAdminAuthed),
-    [passwordAdminAuthed]
   );
   const isFirebaseAdminLinked = useMemo(
     () => isVerifiedAdminUser(adminUser),
     [adminUser]
   );
+  const isAdminAuthenticated = useMemo(
+    () => Boolean(passwordAdminAuthed || isFirebaseAdminLinked),
+    [passwordAdminAuthed, isFirebaseAdminLinked]
+  );
   const [backendConnected, setBackendConnected] = useState(false);
-  const adminUserEmail =
-    passwordAdminAuthed ? (adminUser?.email || 'Administrator Session') : '';
+  const adminUserEmail = isFirebaseAdminLinked
+    ? adminUser?.email || 'lord79915@gmail.com'
+    : passwordAdminAuthed
+      ? 'Administrator Session'
+      : '';
   const adminLoadedRef = useRef(false);
   const backendAvailableRef = useRef(false);
   const apiProductsRef = useRef<Product[]>([]);
@@ -431,7 +467,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     return () => clearTimeout(timer);
   }, [toast]);
 
-  // Helper to perform authenticated admin API calls with session cookie + in-memory header
+  // Helper to perform authenticated admin API calls with session cookie + in-memory header + Firebase Admin ID token
   const adminApiCall = useCallback(
     async <T = Record<string, unknown>>(
       url: string,
@@ -440,13 +476,18 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       tokenOverride?: string
     ): Promise<T | null> => {
       const token = tokenOverride ?? adminSessionToken;
-      const res = await fetch(url, {
+      const firebaseIdToken =
+        auth.currentUser && isVerifiedAdminUser(auth.currentUser)
+          ? await auth.currentUser.getIdToken().catch(() => '')
+          : '';
+      const res = await fetch(apiUrl(url), {
         method,
         credentials: 'include',
         cache: 'no-store',
         headers: {
           ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
           ...(token ? { 'X-Admin-Session': token } : {}),
+          ...(firebaseIdToken ? { 'X-Firebase-Id-Token': firebaseIdToken } : {}),
         },
         ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
       });
@@ -459,23 +500,27 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         if (res.status === 401) {
           setPasswordAdminAuthed(false);
           setAdminSessionToken('');
-          adminLoadedRef.current = false;
+          if (!isVerifiedAdminUser(auth.currentUser)) {
+            adminLoadedRef.current = false;
+          }
         }
         throw new Error(data?.error || `Request failed with status ${res.status}`);
       }
       backendAvailableRef.current = true;
       return data;
     },
-    [adminSessionToken]
+    [adminSessionToken, setAdminSessionToken]
   );
 
   // Monitor Server-Side Cookie/Header Session on mount
   useEffect(() => {
     let active = true;
-    fetch('/api/admin/session', {
+    const savedToken = readSessionToken();
+    fetch(apiUrl('/api/admin/session'), {
       method: 'GET',
       credentials: 'include',
       cache: 'no-store',
+      headers: savedToken ? { 'X-Admin-Session': savedToken } : undefined,
     })
       .then(async (r) => {
         const ct = (r.headers.get('content-type') || '').toLowerCase();
@@ -497,6 +542,8 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
             if (data.sessionToken) {
               setAdminSessionToken(data.sessionToken);
             }
+          } else if (savedToken) {
+            setAdminSessionToken('');
           }
         }
       })
@@ -508,7 +555,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     return () => {
       active = false;
     };
-  }, []);
+  }, [setAdminSessionToken]);
 
   // Monitor optional Firebase Auth state (non-blocking for password session)
   useEffect(() => {
@@ -516,17 +563,9 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       setFirebaseAuthReady(true);
     }, 2500);
 
-    const unsub = onAuthStateChanged(auth, async (user) => {
+    const unsub = onAuthStateChanged(auth, (user) => {
       window.clearTimeout(fallbackTimer);
       setAdminUser(user);
-      if (user && isVerifiedAdminUser(user)) {
-        try {
-          const tok = await user.getIdToken();
-          setAdminSessionToken((prev) => prev || tok);
-        } catch {
-          // ignore token lookup error
-        }
-      }
       setFirebaseAuthReady(true);
     });
     return () => {
@@ -555,7 +594,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
   // Optional Maps public key lookup if Express backend exists locally
   useEffect(() => {
     if (!mapsApiKey) {
-      fetch('/api/public-config')
+      fetch(apiUrl('/api/public-config'))
         .then((r) => {
           const ct = r.headers.get('content-type') || '';
           return r.ok && ct.toLowerCase().includes('application/json') ? r.json() : null;
@@ -570,28 +609,29 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
   const refreshProducts = useCallback(async () => {
     if (adminLoadedRef.current) return;
     setProductsLoading(true);
+    setProductsError(null);
     try {
       const data = await fetchPublicCatalog();
-      if (data && !adminLoadedRef.current) {
-        const normalizedProds = data.products.map(normalizeProductMedia);
-        apiProductsRef.current = normalizedProds;
-        setAllProducts(normalizedProds);
+      if (!adminLoadedRef.current) {
+        if (data.productsError && data.products.length === 0 && fsProductsRef.current.length === 0) {
+          setProductsError(data.productsError);
+        } else {
+          setProductsError(null);
+          const normalizedProds = data.products.map(normalizeProductMedia);
+          apiProductsRef.current = normalizedProds;
+          setAllProducts(normalizedProds);
+        }
         setServerConnected(data.connected);
         if (data.backendAvailable) setBackendConnected(true);
         if (data.settings) {
           apiSettingsRef.current = data.settings;
           setSettings(mergeStoreSettings(data.settings));
         }
-      } else {
-        const published = (await fetchPublishedProducts()).map(normalizeProductMedia);
-        if (!adminLoadedRef.current) {
-          apiProductsRef.current = published;
-          setAllProducts(published);
-          setServerConnected(true);
-        }
       }
     } catch {
-      // Preserve state without injecting placeholder products
+      if (apiProductsRef.current.length === 0 && fsProductsRef.current.length === 0) {
+        setProductsError('Unable to load products. Please try again.');
+      }
     } finally {
       setProductsLoading(false);
     }
@@ -601,6 +641,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
   useEffect(() => {
     let active = true;
     setProductsLoading(true);
+    setProductsError(null);
 
     void testConnection().then((ok) => {
       if (active && ok) setServerConnected(true);
@@ -613,9 +654,14 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         if (data.backendAvailable) setBackendConnected(true);
         setServerConnected(Boolean(data.connected));
         if (!adminLoadedRef.current) {
-          const normalizedProds = data.products.map(normalizeProductMedia);
-          apiProductsRef.current = normalizedProds;
-          setAllProducts(normalizedProds);
+          if (data.productsError && data.products.length === 0 && fsProductsRef.current.length === 0) {
+            setProductsError(data.productsError);
+          } else {
+            setProductsError(null);
+            const normalizedProds = data.products.map(normalizeProductMedia);
+            apiProductsRef.current = normalizedProds;
+            setAllProducts(normalizedProds);
+          }
         }
         if (Array.isArray(data.categories) && data.categories.length > 0) {
           const nextCats = (
@@ -642,15 +688,19 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       })
       .catch(() => {
         if (!active) return;
-        if (!adminLoadedRef.current && apiProductsRef.current.length === 0) {
-          setAllProducts([]);
+        if (
+          !adminLoadedRef.current &&
+          apiProductsRef.current.length === 0 &&
+          fsProductsRef.current.length === 0
+        ) {
+          setProductsError('Unable to load products. Please try again.');
         }
       })
       .finally(() => {
         if (active) setProductsLoading(false);
       });
 
-    // Live public Firestore listeners (never wipe backend API records)
+    // Live public Firestore listeners (keep live Firestore authoritative once server snapshot arrives)
     const unsubProducts = onSnapshot(
       query(collection(db, 'products'), where('status', '==', 'Published')),
       (snap) => {
@@ -661,13 +711,19 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           const filteredFs = fsProductsRef.current.filter(
             (p) => !deletedProductIdsRef.current.has(p.id)
           );
-          setAllProducts(mergeProductsByUpdatedAt(apiProductsRef.current, filteredFs));
+          if (!snap.metadata.fromCache) {
+            apiProductsRef.current = filteredFs;
+            setAllProducts(filteredFs);
+          } else {
+            setAllProducts(mergeProductsByUpdatedAt(apiProductsRef.current, filteredFs));
+          }
+          setProductsError(null);
           setProductsLoading(false);
           setServerConnected(true);
         }
       },
       () => {
-        // Non-fatal if Firestore rules/network unavailable; backend catalog handles reads
+        // Non-fatal if Firestore listener interrupted; explicit fetch handles error reporting
       }
     );
 
@@ -815,7 +871,12 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         const filteredFs = fsProductsRef.current.filter(
           (p) => !deletedProductIdsRef.current.has(p.id)
         );
-        setAllProducts(mergeProductsByUpdatedAt(apiProductsRef.current, filteredFs));
+        if (!snap.metadata.fromCache) {
+          apiProductsRef.current = filteredFs;
+          setAllProducts(filteredFs);
+        } else {
+          setAllProducts(mergeProductsByUpdatedAt(apiProductsRef.current, filteredFs));
+        }
         setServerConnected(true);
       },
       () => {}
@@ -867,7 +928,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const setupAdminPassword = useCallback(
     async (password: string) => {
-      const res = await fetch('/api/admin/setup-password', {
+      const res = await fetch(apiUrl('/api/admin/setup-password'), {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
@@ -875,7 +936,9 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       });
       const ct = (res.headers.get('content-type') || '').toLowerCase();
       if (!ct.includes('application/json')) {
-        throw new Error('Authentication server is unavailable.');
+        throw new Error(
+          'Password setup requires the Node backend server. Sign in with Google instead.'
+        );
       }
       const data = (await res.json()) as {
         authenticated?: boolean;
@@ -891,15 +954,14 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       setAdminSetupRequired(false);
       setPasswordAdminAuthed(true);
       setAdminSessionToken(tok);
-      setMediaSessionToken(tok);
       await refreshAdminData(tok);
     },
-    [refreshAdminData]
+    [refreshAdminData, setAdminSessionToken]
   );
 
   const loginAdminWithPassword = useCallback(
     async (password: string) => {
-      const res = await fetch('/api/admin/login', {
+      const res = await fetch(apiUrl('/api/admin/login'), {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
@@ -907,7 +969,9 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       });
       const ct = (res.headers.get('content-type') || '').toLowerCase();
       if (!ct.includes('application/json')) {
-        throw new Error('Authentication server is unavailable.');
+        throw new Error(
+          'Password authentication server is not running on this static host. Please sign in with Google below.'
+        );
       }
       const data = (await res.json()) as {
         authenticated?: boolean;
@@ -920,27 +984,48 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         throw new Error(data.error || 'Invalid administrator password.');
       }
       const tok = data.sessionToken || '';
+      setBackendConnected(true);
+      backendAvailableRef.current = true;
       setAdminSetupRequired(false);
       setPasswordAdminAuthed(true);
       setAdminSessionToken(tok);
-      setMediaSessionToken(tok);
       await refreshAdminData(tok);
     },
-    [refreshAdminData]
+    [refreshAdminData, setAdminSessionToken]
   );
 
   const signInAdmin = useCallback(async () => {
     const user = await signInAdminWithGoogle();
     setAdminUser(user);
-    const tok = await user.getIdToken();
-    setAdminSessionToken(tok);
-    await refreshAdminData(tok);
+    let sessionTok = adminSessionToken;
+    try {
+      const firebaseIdToken = await user.getIdToken();
+      const res = await fetch(apiUrl('/api/admin/session'), {
+        method: 'GET',
+        credentials: 'include',
+        cache: 'no-store',
+        headers: firebaseIdToken ? { 'X-Firebase-Id-Token': firebaseIdToken } : undefined,
+      });
+      const ct = (res.headers.get('content-type') || '').toLowerCase();
+      if (res.ok && ct.includes('application/json')) {
+        const data = (await res.json()) as { authenticated?: boolean; sessionToken?: string };
+        backendAvailableRef.current = true;
+        setBackendConnected(true);
+        if (data.authenticated && data.sessionToken) {
+          sessionTok = data.sessionToken;
+          setAdminSessionToken(data.sessionToken);
+        }
+      }
+    } catch {
+      // Static Firebase-only host without Node backend
+    }
+    await refreshAdminData(sessionTok || undefined);
     return user;
-  }, [refreshAdminData]);
+  }, [adminSessionToken, refreshAdminData, setAdminSessionToken]);
 
   const signOutAdminUser = useCallback(async () => {
     try {
-      await fetch('/api/admin/logout', {
+      await fetch(apiUrl('/api/admin/logout'), {
         method: 'POST',
         credentials: 'include',
         headers: adminSessionToken ? { 'X-Admin-Session': adminSessionToken } : undefined,
@@ -952,10 +1037,9 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     setPasswordAdminAuthed(false);
     setAdminUser(null);
     setAdminSessionToken('');
-    setMediaSessionToken('');
     adminLoadedRef.current = false;
     await refreshProducts();
-  }, [adminSessionToken, refreshProducts]);
+  }, [adminSessionToken, refreshProducts, setAdminSessionToken]);
 
   const addToCart = useCallback(
     (
@@ -1154,7 +1238,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       let backendSaved = false;
 
       try {
-        const res = await fetch('/api/orders', {
+        const res = await fetch(apiUrl('/api/orders'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(newOrder),
@@ -1233,9 +1317,11 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       const localMatch = trackOrder(orderNumber, phone);
       try {
         const res = await fetch(
-          `/api/orders/track?orderNumber=${encodeURIComponent(orderNumber)}&phone=${encodeURIComponent(
-            phone
-          )}`,
+          apiUrl(
+            `/api/orders/track?orderNumber=${encodeURIComponent(orderNumber)}&phone=${encodeURIComponent(
+              phone
+            )}`
+          ),
           { cache: 'no-store' }
         );
         const ct = (res.headers.get('content-type') || '').toLowerCase();
@@ -1324,7 +1410,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       });
       let backendSaved = false;
       try {
-        const res = await fetch('/api/reviews', {
+        const res = await fetch(apiUrl('/api/reviews'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(input),
@@ -1356,35 +1442,81 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const upsertProduct = useCallback(
     async (product: Product): Promise<Product> => {
+      if (!isVerifiedAdminUser(auth.currentUser)) {
+        throw new Error(
+          'Google Admin sign-in (lord79915@gmail.com or pythoxfashion@gmail.com) is required to permanently save products to Firestore. Click "Link Cloud Sync" above.'
+        );
+      }
+
       let cleanProduct = clampProductForFirestore(product);
+      if (!cleanProduct.name || !cleanProduct.sku || !cleanProduct.category || cleanProduct.price <= 0) {
+        throw new Error('Product Name, SKU, Category, and valid Price are required.');
+      }
+      const hasInvalidImageUrl = cleanProduct.images.some(
+        (img) =>
+          !img ||
+          img.startsWith('blob:') ||
+          img.startsWith('data:') ||
+          img.startsWith('/uploads/')
+      );
+      if (cleanProduct.images.length === 0 || hasInvalidImageUrl) {
+        throw new Error(
+          'All product images must be stored permanently in Cloud Storage before saving. Please re-upload your image(s).'
+        );
+      }
+
       const exists = allProducts.some((p) => p.id === cleanProduct.id);
 
-      const apiRes = await adminApiCall<{ ok?: boolean; product?: Product }>(
-        '/api/admin/products',
-        'POST',
-        { product: cleanProduct }
-      );
+      // Preserve existing Firestore created_at timestamp so update rules always pass
+      try {
+        const existingSnap = await getDocFromServer(doc(db, 'products', cleanProduct.id));
+        if (existingSnap.exists()) {
+          const existingCreated = (existingSnap.data() as Partial<Product>).created_at;
+          if (typeof existingCreated === 'string' && existingCreated) {
+            cleanProduct = clampProductForFirestore({
+              ...cleanProduct,
+              created_at: existingCreated,
+            });
+          }
+        }
+      } catch {
+        // Proceed if document does not exist yet
+      }
+
+      const apiRes = await adminApiCall<{
+        ok?: boolean;
+        product?: Product;
+        persistedToCloud?: boolean;
+      }>('/api/admin/products', 'POST', { product: cleanProduct }).catch((err) => {
+        // Re-throw real backend validation/auth errors; only allow Firestore direct fallback if backend is absent
+        if (err instanceof Error && !err.message.toLowerCase().includes('failed to fetch')) {
+          throw err;
+        }
+        return null;
+      });
 
       if (apiRes?.product) {
         cleanProduct = clampProductForFirestore(apiRes.product);
       }
 
-      if (isVerifiedAdminUser(auth.currentUser)) {
-        try {
-          await setDoc(doc(db, 'products', cleanProduct.id), cleanProduct);
-        } catch (err) {
-          if (!apiRes) {
-            handleFirestoreError(err, OperationType.WRITE, `products/${cleanProduct.id}`);
-          }
+      try {
+        await setDoc(doc(db, 'products', cleanProduct.id), cleanProduct);
+        const verified = await verifyProductPersisted(cleanProduct.id);
+        if (!verified) {
+          throw new Error(
+            'Product save could not be verified on Cloud Firestore. Please retry.'
+          );
         }
-      } else if (!apiRes) {
-        throw new Error('Administrator session expired. Please unlock the Admin Panel again.');
+        cleanProduct = normalizeProductMedia(clampProductForFirestore(verified));
+      } catch (err) {
+        handleFirestoreError(err, OperationType.WRITE, `products/${cleanProduct.id}`);
       }
 
       deletedProductIdsRef.current.delete(cleanProduct.id);
       apiProductsRef.current = apiProductsRef.current.some((p) => p.id === cleanProduct.id)
         ? apiProductsRef.current.map((p) => (p.id === cleanProduct.id ? cleanProduct : p))
         : [cleanProduct, ...apiProductsRef.current];
+      setProductsError(null);
 
       setAllProducts((prev) => {
         const prevExists = prev.some((p) => p.id === cleanProduct.id);
@@ -1396,13 +1528,13 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       if (exists) {
         showToast(
           cleanProduct.status === 'Published'
-            ? 'Product updated & live on storefront'
+            ? 'Product updated & saved to Cloud Database'
             : `Product updated (${cleanProduct.status})`
         );
       } else {
         showToast(
           cleanProduct.status === 'Published'
-            ? 'Product published to storefront'
+            ? 'Product published & permanently saved to Cloud Database'
             : `Product saved as ${cleanProduct.status}`
         );
       }
@@ -1432,21 +1564,25 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const deleteProduct = useCallback(
     async (productId: string) => {
+      if (!isVerifiedAdminUser(auth.currentUser)) {
+        throw new Error(
+          'Google Admin sign-in is required to permanently delete products from Cloud Database.'
+        );
+      }
       const cleanId = sanitizeDocId(productId);
-      const apiRes = await adminApiCall<{ ok?: boolean }>(
+      await adminApiCall<{ ok?: boolean }>(
         `/api/admin/products/${encodeURIComponent(cleanId)}`,
         'DELETE'
-      );
-      if (isVerifiedAdminUser(auth.currentUser)) {
-        try {
-          await deleteDoc(doc(db, 'products', cleanId));
-        } catch (err) {
-          if (!apiRes) {
-            handleFirestoreError(err, OperationType.DELETE, `products/${cleanId}`);
-          }
+      ).catch((err) => {
+        if (err instanceof Error && !err.message.toLowerCase().includes('failed to fetch')) {
+          throw err;
         }
-      } else if (!apiRes) {
-        throw new Error('Administrator session expired. Please log in again.');
+        return null;
+      });
+      try {
+        await deleteDoc(doc(db, 'products', cleanId));
+      } catch (err) {
+        handleFirestoreError(err, OperationType.DELETE, `products/${cleanId}`);
       }
       deletedProductIdsRef.current.add(cleanId);
       apiProductsRef.current = apiProductsRef.current.filter((p) => p.id !== cleanId);
@@ -1854,6 +1990,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         backendConnected,
         isFirebaseAdminLinked,
         productsLoading,
+        productsError,
         mapsApiKey,
         authReady,
         isAdminAuthenticated,

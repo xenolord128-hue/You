@@ -1,5 +1,6 @@
 import { BlogPost, Category, Collection, Product, StoreSettings } from '../types/ecommerce';
 import { sanitizeMediaUrl } from '../lib/formatters';
+import { apiUrl } from '../lib/api';
 import mensHeroCampaignImg from '../assets/images/mens_hero_campaign_1794997537605.jpg';
 import heroMenImg from '../assets/images/pythox_hero_men_1794838924637.jpg';
 import catMenImg from '../assets/images/cat_men_1794789696875.jpg';
@@ -55,7 +56,11 @@ export function resolveBundledMediaUrl(raw?: string | null, fallback = ''): stri
   if (match?.[1]) {
     return BUNDLED_ASSET_MAP[match[1]] || fallback;
   }
-  return sanitizeMediaUrl(value, fallback);
+  const safe = sanitizeMediaUrl(value, fallback);
+  if (safe.startsWith('/api/media/')) {
+    return apiUrl(safe);
+  }
+  return safe;
 }
 
 export function sanitizeHeroSettingUrl(raw?: string | null): string {

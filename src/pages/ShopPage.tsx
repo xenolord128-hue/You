@@ -63,7 +63,7 @@ const MODE_COPY: Record<ShopMode, { title: string; eyebrow: string; desc: string
 };
 
 export const ShopPage: React.FC<ShopPageProps> = ({ mode = 'all' }) => {
-  const { products, categories } = useStore();
+  const { products, categories, productsLoading, productsError, refreshProducts } = useStore();
   const { categorySlug } = useParams<{ categorySlug?: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
@@ -894,7 +894,40 @@ export const ShopPage: React.FC<ShopPageProps> = ({ mode = 'all' }) => {
             )}
           </div>
 
-          {filtered.length === 0 ? (
+          {productsLoading && products.length === 0 ? (
+            <div aria-busy="true" aria-label="Loading products">
+              <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-[#5C5C5C] mb-4">
+                Loading products...
+              </p>
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3.5 sm:gap-5 lg:gap-6">
+                {[0, 1, 2, 3, 4, 5, 6, 7].map((slot) => (
+                  <div
+                    key={slot}
+                    className="aspect-[4/5] rounded-2xl sm:rounded-3xl bg-[#E4E3DF] animate-pulse"
+                  />
+                ))}
+              </div>
+            </div>
+          ) : productsError && products.length === 0 ? (
+            <div className="rounded-3xl border border-[#D9D9D9] bg-[#EAE9E4] p-8 sm:p-12 text-center space-y-4">
+              <p className="font-mono text-[10.5px] uppercase tracking-[0.2em] text-[#5C5C5C]">
+                Catalog Connection
+              </p>
+              <p className="text-xl font-editorial font-medium text-[#0A0A0A]">
+                Unable to load products. Please try again.
+              </p>
+              <p className="text-xs text-[#5C5C5C] max-w-md mx-auto leading-relaxed">
+                We couldn&apos;t reach the product database right now. Please check your connection and retry.
+              </p>
+              <button
+                type="button"
+                onClick={() => void refreshProducts()}
+                className="btn-base btn-primary"
+              >
+                Retry
+              </button>
+            </div>
+          ) : filtered.length === 0 ? (
             <div className="rounded-3xl border border-[#D9D9D9] bg-[#EAE9E4] p-8 sm:p-12 text-center space-y-4">
               <p className="font-mono text-[10.5px] uppercase tracking-[0.2em] text-[#5C5C5C]">
                 {activeCategoryRecord
@@ -903,7 +936,7 @@ export const ShopPage: React.FC<ShopPageProps> = ({ mode = 'all' }) => {
               </p>
               <p className="text-xl font-editorial font-medium text-[#0A0A0A]">
                 {products.length === 0
-                  ? 'No products available at the moment.'
+                  ? 'No products are publicly available.'
                   : activeCategoryRecord && categoryScopedProducts.length === 0
                   ? `New ${activeCategoryRecord.name} pieces arriving soon.`
                   : 'No matching pieces found.'}

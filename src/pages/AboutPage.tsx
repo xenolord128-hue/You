@@ -1,7 +1,9 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowRight, Check, Layers, Scissors, ShieldCheck, Shirt } from 'lucide-react';
+import { ArrowRight, Check, Clock, Layers, MapPin, Scissors, ShieldCheck, Shirt } from 'lucide-react';
 import { BRAND_LOCATION, EDITORIAL_MEDIA } from '../config/storeConfig';
+import { useStore } from '../context/StoreContext';
+import { BoutiqueLocatorMap } from '../components/BoutiqueLocatorMap';
 import { BrandLogo } from '../components/BrandLogo';
 import { SeoHead } from '../components/SeoHead';
 import { Reveal, useLowMotion } from '../components/Motion';
@@ -52,6 +54,7 @@ const SWEATSHIRT_COLORS: SweatshirtColorOption[] = [
 
 export const AboutPage: React.FC = () => {
   const lowMotion = useLowMotion();
+  const { settings, mapsApiKey } = useStore();
   const [selectedColor, setSelectedColor] = useState<SweatshirtColorOption>(
     SWEATSHIRT_COLORS[0]
   );
@@ -663,6 +666,74 @@ export const AboutPage: React.FC = () => {
                   </Link>
                 </div>
               </div>
+            </div>
+          </div>
+        </Reveal>
+      </section>
+
+      {/* Flagship Showroom & Owner Business Location Map */}
+      <section className="mx-auto max-w-[1440px] px-4 sm:px-6 lg:px-10 py-14 lg:py-16 border-b border-[#D9D9D9]">
+        <Reveal>
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-10 items-center">
+            <div className="lg:col-span-5 space-y-5">
+              <div className="space-y-2">
+                <p className="font-mono text-xs uppercase tracking-[0.18em] text-[#5C5C5C]">
+                  Flagship Showroom · Business Location
+                </p>
+                <h2 className="text-3xl sm:text-4xl font-bold text-[#0A0A0A]">
+                  আমাদের শোরুম ও অবস্থান
+                </h2>
+              </div>
+
+              <p className="text-[15px] text-[#292929] leading-[1.75]">
+                সাভারে অবস্থিত PYTHOX WORLD ফ্ল্যাগশিপ শোরুমে সরাসরি এসে আমাদের প্রিমিয়াম উইন্টার ও আধুনিক মেনসওয়্যার কালেকশন দেখে নিতে পারেন।
+              </p>
+
+              <div className="rounded-2xl border border-[#D9D9D9] bg-white p-5 space-y-3 text-sm">
+                <div className="flex items-start gap-2.5">
+                  <MapPin className="h-4 w-4 text-[#0A0A0A] shrink-0 mt-0.5" />
+                  <div>
+                    <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-[#5C5C5C]">
+                      Store Address
+                    </p>
+                    <p className="font-semibold text-[#0A0A0A] mt-0.5">
+                      {settings.businessAddress || BRAND_LOCATION}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-2.5 pt-2 border-t border-[#ECECEC]">
+                  <Clock className="h-4 w-4 text-[#0A0A0A] shrink-0 mt-0.5" />
+                  <div>
+                    <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-[#5C5C5C]">
+                      Opening Hours
+                    </p>
+                    <p className="text-[#0A0A0A] mt-0.5">Daily 10:30 AM – 9:30 PM BST</p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap gap-3">
+                <Link to="/contact" className="btn-base btn-secondary">
+                  Contact &amp; Directions
+                </Link>
+              </div>
+            </div>
+
+            <div className="lg:col-span-7">
+              {mapsApiKey ? (
+                <BoutiqueLocatorMap
+                  businessAddress={settings.businessAddress || BRAND_LOCATION}
+                  heightClass="h-[340px] sm:h-[400px]"
+                />
+              ) : (
+                <div className="rounded-3xl border border-[#D9D9D9] bg-[#EAE9E4] p-8 space-y-2 text-sm text-[#292929]">
+                  <p className="font-semibold uppercase tracking-[0.12em] text-[#0A0A0A]">
+                    PYTHOX WORLD Flagship Showroom
+                  </p>
+                  <p>{settings.businessAddress || BRAND_LOCATION}</p>
+                  <p className="text-xs text-[#5C5C5C]">Daily 10:30 AM – 9:30 PM BST</p>
+                </div>
+              )}
             </div>
           </div>
         </Reveal>

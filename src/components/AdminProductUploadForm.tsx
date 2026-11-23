@@ -26,6 +26,8 @@ import { uploadMediaToFirebase } from '../services/mediaService';
 import { DEFAULT_CATEGORIES } from '../config/storeConfig';
 import { findCategoryByIdentifier, getSortedCategories } from '../lib/categoryUtils';
 import { useStore } from '../context/StoreContext';
+import { apiUrl } from '../lib/api';
+import { auth, isVerifiedAdminUser } from '../lib/firebase';
 
 const FALLBACK_CATEGORIES: ProductCategory[] = DEFAULT_CATEGORIES.map((c) => c.name);
 
@@ -109,6 +111,9 @@ interface AdminProductUploadFormProps {
   onCancelEdit: () => void;
   upsertProduct: (product: Product, isNew?: boolean) => Promise<Product>;
   showToast: (msg: string) => void;
+  isFirebaseAdminLinked?: boolean;
+  onLinkCloudSync?: () => Promise<void>;
+  linkingCloud?: boolean;
 }
 
 function formatBytes(bytes?: number): string {
@@ -141,6 +146,9 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
   onCancelEdit,
   upsertProduct,
   showToast,
+  isFirebaseAdminLinked = true,
+  onLinkCloudSync,
+  linkingCloud = false,
 }) => {
   const { adminSessionToken } = useStore();
   const defaultCategoryName =
@@ -630,12 +638,17 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
     }
     setIsGeneratingCopy(true);
     try {
-      const res = await fetch('/api/admin/generate-copy', {
+      const firebaseIdToken =
+        auth.currentUser && isVerifiedAdminUser(auth.currentUser)
+          ? await auth.currentUser.getIdToken().catch(() => '')
+          : '';
+      const res = await fetch(apiUrl('/api/admin/generate-copy'), {
         method: 'POST',
         credentials: 'include',
         headers: {
           'Content-Type': 'application/json',
           ...(adminSessionToken ? { 'X-Admin-Session': adminSessionToken } : {}),
+          ...(firebaseIdToken ? { 'X-Firebase-Id-Token': firebaseIdToken } : {}),
         },
         body: JSON.stringify({ name: name.trim(), category, materials }),
       });
@@ -718,6 +731,14 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
     if (isSubmitting) return;
 
     setSuccessBanner(null);
+    if (!isFirebaseAdminLinked || !isVerifiedAdminUser(auth.currentUser)) {
+      const msg =
+        'Google Admin sign-in (lord79915@gmail.com or pythoxfashion@gmail.com) is required before publishing so products save permanently to Firestore.';
+      setErrors({ submit: msg });
+      showToast(msg);
+      return;
+    }
+
     const validationErrors = validateForm();
     if (Object.keys(validationErrors).length > 0) {
       setErrors({
@@ -1075,6 +1096,35 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
           >
             <X className="h-4 w-4" />
           </button>
+        </div>
+      )}
+
+      {!isFirebaseAdminLinked && (
+        <div
+          role="alert"
+          className="admin-card px-5 py-4 !border-[#991B1B] !bg-[#FEF2F2] text-[#7F1D1D] flex flex-wrap items-center justify-between gap-3 text-[13px]"
+        >
+          <div className="flex items-start gap-2.5 min-w-0 flex-1">
+            <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+            <div className="flex flex-col gap-0.5">
+              <span className="font-semibold">
+                Connect Google Admin to Save Products Permanently
+              </span>
+              <span>
+                Publishing requires Google Admin verification (lord79915@gmail.com or pythoxfashion@gmail.com) so product images and data write permanently to Cloud Firestore and never disappear.
+              </span>
+            </div>
+          </div>
+          {onLinkCloudSync && (
+            <button
+              type="button"
+              disabled={linkingCloud}
+              onClick={() => void onLinkCloudSync()}
+              className="admin-btn admin-btn-dark shrink-0"
+            >
+              {linkingCloud ? 'Connecting...' : 'Sign in with Google'}
+            </button>
+          )}
         </div>
       )}
 

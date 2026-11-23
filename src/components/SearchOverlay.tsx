@@ -4,6 +4,7 @@ import { ArrowRight, Search, X } from 'lucide-react';
 import { useStore } from '../context/StoreContext';
 import { formatBDT } from '../lib/formatters';
 import { trackSearchEvent } from '../lib/metaPixel';
+import { apiUrl } from '../lib/api';
 
 // Suggestions are derived strictly from published products
 
@@ -83,7 +84,7 @@ export const SearchOverlay: React.FC = () => {
 
     setIsSmartLoading(true);
     try {
-      const res = await fetch('/api/smart-search', {
+      const res = await fetch(apiUrl('/api/smart-search'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

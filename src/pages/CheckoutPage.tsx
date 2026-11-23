@@ -29,7 +29,7 @@ import {
   DhakaAddressAutocomplete,
   SelectedAddressResult,
 } from '../components/DhakaAddressAutocomplete';
-import { BoutiqueLocatorMap } from '../components/BoutiqueLocatorMap';
+import { CustomerDeliveryMap } from '../components/BoutiqueLocatorMap';
 import { BrandLogo } from '../components/BrandLogo';
 import { SeoHead } from '../components/SeoHead';
 import { SuccessCheckmark } from '../components/Motion';
@@ -133,6 +133,7 @@ interface CheckoutDraft {
   postalCode?: string;
   deliveryNote?: string;
   deliveryMethod?: DeliveryMethod;
+  deliveryLocation?: { lat: number; lng: number; label: string } | null;
   selectedProductId?: string;
   selectedSize?: string;
   selectedColor?: string;
@@ -197,6 +198,9 @@ const stepVariants = {
 export const CheckoutPage: React.FC = () => {
   const {
     products,
+    productsLoading,
+    productsError,
+    refreshProducts,
     cart,
     settings,
     appliedCoupon,
@@ -248,7 +252,7 @@ export const CheckoutPage: React.FC = () => {
     lat: number;
     lng: number;
     label: string;
-  } | null>(null);
+  } | null>(initialDraft.deliveryLocation ?? null);
   const [deliveryMethod, setDeliveryMethod] = useState<DeliveryMethod>(
     initialDraft.deliveryMethod ?? 'Standard Delivery'
   );
@@ -358,6 +362,7 @@ export const CheckoutPage: React.FC = () => {
         postalCode,
         deliveryNote,
         deliveryMethod,
+        deliveryLocation,
         selectedProductId,
         selectedSize,
         selectedColor,
@@ -382,6 +387,7 @@ export const CheckoutPage: React.FC = () => {
     postalCode,
     deliveryNote,
     deliveryMethod,
+    deliveryLocation,
     selectedProductId,
     selectedSize,
     selectedColor,
@@ -1685,8 +1691,8 @@ export const CheckoutPage: React.FC = () => {
                   </div>
 
                   {mapsApiKey && (
-                    <div className="pt-2">
-                      <div className="flex items-center justify-between text-xs text-[#5C5C5C] mb-2">
+                    <div className="pt-2 space-y-2">
+                      <div className="flex items-center justify-between text-xs text-[#5C5C5C]">
                         <span className="inline-flex items-center gap-1.5">
                           <MapPin className="h-3.5 w-3.5 text-[#0A0A0A]" />
                           {inDhaka
@@ -1699,9 +1705,28 @@ export const CheckoutPage: React.FC = () => {
                           </span>
                         )}
                       </div>
-                      <BoutiqueLocatorMap
-                        deliveryPoint={deliveryLocation}
-                        heightClass="h-[200px]"
+                      <CustomerDeliveryMap
+                        address={deliveryAddress}
+                        area={area}
+                        city={city}
+                        postalCode={postalCode}
+                        deliveryLocation={deliveryLocation}
+                        onLocationChange={setDeliveryLocation}
+                        onReverseGeocodeAddress={(info) => {
+                          if (info.formattedAddress) {
+                            setDeliveryAddress(info.formattedAddress);
+                          }
+                          if (info.city) setCity(info.city);
+                          if (info.area) setArea(info.area);
+                          if (info.postalCode) setPostalCode(info.postalCode);
+                          setFieldErrors((p) => ({
+                            ...p,
+                            delivery_address: undefined,
+                            city: undefined,
+                            area: undefined,
+                          }));
+                        }}
+                        heightClass="h-[240px] sm:h-[260px]"
                       />
                     </div>
                   )}
@@ -1725,15 +1750,31 @@ export const CheckoutPage: React.FC = () => {
                   {!usingCart && products.length === 0 ? (
                     <div className="rounded-2xl border border-[#D9D9D9] bg-[#F3F2EE] p-6 text-center space-y-3">
                       <p className="text-sm font-medium text-[#0A0A0A]">
-                        No products available at the moment.
+                        {productsLoading
+                          ? 'Loading products...'
+                          : productsError
+                            ? 'Unable to load products. Please try again.'
+                            : 'No products are publicly available.'}
                       </p>
-                      <p className="text-xs text-[#5C5C5C]">
-                        Products published from the Admin Panel will appear here
-                        for direct ordering.
-                      </p>
-                      <Link to="/shop" className="btn-base btn-secondary btn-sm">
-                        Browse Shop
-                      </Link>
+                      {productsError ? (
+                        <button
+                          type="button"
+                          onClick={() => void refreshProducts()}
+                          className="btn-base btn-secondary btn-sm"
+                        >
+                          Retry
+                        </button>
+                      ) : !productsLoading ? (
+                        <>
+                          <p className="text-xs text-[#5C5C5C]">
+                            Products published from the Admin Panel will appear here
+                            for direct ordering.
+                          </p>
+                          <Link to="/shop" className="btn-base btn-secondary btn-sm">
+                            Browse Shop
+                          </Link>
+                        </>
+                      ) : null}
                     </div>
                   ) : (
                     <>

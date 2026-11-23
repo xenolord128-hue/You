@@ -203,6 +203,21 @@
         "createdAt": { "type": "string", "maxLength": 64 }
       },
       "required": ["email", "role"]
+    },
+    "MediaAsset": {
+      "title": "MediaAsset",
+      "description": "Durably persisted product/category/hero image stored in Firestore and served immutably via /api/media/{id}.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "kind": { "type": "string", "enum": ["image"] },
+        "mimeType": { "type": "string", "minLength": 5, "maxLength": 40 },
+        "filename": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "sizeBytes": { "type": "number" },
+        "dataBase64": { "type": "string", "minLength": 10, "maxLength": 960000 },
+        "createdAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "kind", "mimeType", "filename", "sizeBytes", "dataBase64", "createdAt"]
     }
   },
   "firestore": {
@@ -241,6 +256,10 @@
     "/admins/{userId}": {
       "schema": { "$ref": "#/entities/AdminUser" },
       "description": "Admin role directory."
+    },
+    "/media_assets/{mediaId}": {
+      "schema": { "$ref": "#/entities/MediaAsset" },
+      "description": "Persistent binary image payloads accessed by exact ID only (no list) and managed strictly by admins."
     }
   }
 }

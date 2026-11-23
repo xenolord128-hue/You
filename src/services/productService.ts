@@ -2,7 +2,9 @@ import {
   collection,
   doc,
   getDoc,
+  getDocFromServer,
   getDocs,
+  getDocsFromServer,
   query,
   where,
 } from 'firebase/firestore';
@@ -19,13 +21,14 @@ import {
   auth,
   db,
   isVerifiedAdminUser,
-  testConnection,
 } from '../lib/firebase';
+import { apiUrl } from '../lib/api';
 
 export interface PublicCatalogResponse {
   connected: boolean;
   backendAvailable: boolean;
   products: Product[];
+  productsError?: string | null;
   categories?: Category[];
   collections?: Collection[];
   coupons?: Coupon[];
@@ -79,15 +82,25 @@ export function mergeProductsByUpdatedAt(
   });
 }
 
-async function fetchBackendStore(): Promise<Partial<PublicCatalogResponse> | null> {
+interface BackendStoreFetchResult {
+  data: Partial<PublicCatalogResponse> | null;
+  failed: boolean;
+}
+
+async function fetchBackendStore(): Promise<BackendStoreFetchResult> {
   try {
-    const res = await fetch('/api/store', {
+    const res = await fetch(apiUrl('/api/store'), {
       method: 'GET',
       cache: 'no-store',
       credentials: 'include',
     });
     const ct = (res.headers.get('content-type') || '').toLowerCase();
-    if (!res.ok || !ct.includes('application/json')) return null;
+    if (!res.ok) {
+      return { data: null, failed: true };
+    }
+    if (!ct.includes('application/json')) {
+      return { data: null, failed: true };
+    }
     const data = (await res.json()) as {
       connected?: boolean;
       products?: Product[];
@@ -97,17 +110,43 @@ async function fetchBackendStore(): Promise<Partial<PublicCatalogResponse> | nul
       settings?: Partial<StoreSettings>;
     };
     return {
-      connected: Boolean(data.connected ?? true),
-      backendAvailable: true,
-      products: Array.isArray(data.products) ? data.products.filter(isPublishedProduct) : [],
-      categories: Array.isArray(data.categories) && data.categories.length > 0 ? data.categories : undefined,
-      collections: Array.isArray(data.collections) && data.collections.length > 0 ? data.collections : undefined,
-      reviews: Array.isArray(data.reviews) ? data.reviews : [],
-      settings: data.settings,
+      failed: false,
+      data: {
+        connected: Boolean(data.connected ?? true),
+        backendAvailable: true,
+        products: Array.isArray(data.products) ? data.products.filter(isPublishedProduct) : [],
+        categories: Array.isArray(data.categories) && data.categories.length > 0 ? data.categories : undefined,
+        collections: Array.isArray(data.collections) && data.collections.length > 0 ? data.collections : undefined,
+        reviews: Array.isArray(data.reviews) ? data.reviews : [],
+        settings: data.settings,
+      },
     };
   } catch {
-    return null;
+    return { data: null, failed: true };
   }
+}
+
+async function fetchPublishedProductsFromFirestoreServer(): Promise<Product[]> {
+  const q = query(collection(db, 'products'), where('status', '==', 'Published'));
+  try {
+    const snap = await getDocsFromServer(q);
+    return snap.docs.map((d) => d.data() as Product).filter(isPublishedProduct);
+  } catch (err) {
+    // Fallback to getDocs only if Firestore has already populated local memory; throw if network fails cleanly
+    const snap = await getDocs(q);
+    if (snap.metadata.fromCache && snap.empty) {
+      throw err;
+    }
+    return snap.docs.map((d) => d.data() as Product).filter(isPublishedProduct);
+  }
+}
+
+/**
+ * Verifies a written product directly from Firestore server storage (bypasses IndexedDB cache).
+ */
+export async function verifyProductPersisted(productId: string): Promise<Product | null> {
+  const snap = await getDocFromServer(doc(db, 'products', productId));
+  return snap.exists() ? (snap.data() as Product) : null;
 }
 
 /**
@@ -115,96 +154,115 @@ async function fetchBackendStore(): Promise<Partial<PublicCatalogResponse> | nul
  * Never returns demo, mock, or unpublished placeholder items.
  */
 export async function fetchPublishedProducts(): Promise<Product[]> {
-  const [backendStore, fsProducts] = await Promise.all([
+  const [backendRes, fsRes] = await Promise.allSettled([
     fetchBackendStore(),
-    (async () => {
-      try {
-        const q = query(collection(db, 'products'), where('status', '==', 'Published'));
-        const snap = await getDocs(q);
-        return snap.docs
-          .map((d) => d.data() as Product)
-          .filter(isPublishedProduct);
-      } catch {
-        return [] as Product[];
-      }
-    })(),
+    fetchPublishedProductsFromFirestoreServer(),
   ]);
 
-  const apiProducts = Array.isArray(backendStore?.products) ? backendStore.products : [];
+  const backendOk =
+    backendRes.status === 'fulfilled' && !backendRes.value.failed && backendRes.value.data !== null;
+  const fsOk = fsRes.status === 'fulfilled';
+
+  if (!backendOk && !fsOk) {
+    throw new Error('Unable to load products. Please try again.');
+  }
+
+  const apiProducts =
+    backendOk && Array.isArray(backendRes.value.data?.products)
+      ? backendRes.value.data!.products!
+      : [];
+  const fsProducts = fsOk ? fsRes.value : [];
+
   return mergeProductsByUpdatedAt(apiProducts, fsProducts).filter(isPublishedProduct);
 }
 
 /**
- * Fetches the public storefront catalog from Express backend & Firestore,
- * enforcing that only "Published" products are returned to StoreContext.
+ * Fetches the public storefront catalog from Express backend & Firestore simultaneously
+ * (never gating Firestore queries behind a secondary test ping), distinguishing DB/network
+ * failures from a genuinely empty published catalog.
  */
-export async function fetchPublicCatalog(): Promise<PublicCatalogResponse | null> {
-  const [backendStore, fsOk] = await Promise.all([
+export async function fetchPublicCatalog(): Promise<PublicCatalogResponse> {
+  const [
+    backendRes,
+    prodRes,
+    catRes,
+    colRes,
+    coupRes,
+    revRes,
+    setRes,
+  ] = await Promise.allSettled([
     fetchBackendStore(),
-    testConnection().catch(() => false),
+    fetchPublishedProductsFromFirestoreServer(),
+    getDocs(collection(db, 'categories')),
+    getDocs(collection(db, 'collections')),
+    getDocs(collection(db, 'coupons')),
+    getDocs(collection(db, 'reviews')),
+    getDoc(doc(db, 'settings', 'store_config')),
   ]);
 
-  let fsProducts: Product[] = [];
-  let fsCategories: Category[] | undefined;
-  let fsCollections: Collection[] | undefined;
-  let fsCoupons: Coupon[] = [];
-  let fsReviews: Review[] = [];
-  let fsSettings: Partial<StoreSettings> | undefined;
+  const backendData =
+    backendRes.status === 'fulfilled' ? backendRes.value.data : null;
+  const backendFailed =
+    backendRes.status === 'rejected' ||
+    (backendRes.status === 'fulfilled' && backendRes.value.failed);
 
-  if (fsOk) {
-    const [prodRes, catRes, colRes, coupRes, revRes, setRes] = await Promise.allSettled([
-      getDocs(query(collection(db, 'products'), where('status', '==', 'Published'))),
-      getDocs(collection(db, 'categories')),
-      getDocs(collection(db, 'collections')),
-      getDocs(collection(db, 'coupons')),
-      getDocs(collection(db, 'reviews')),
-      getDoc(doc(db, 'settings', 'store_config')),
-    ]);
+  const fsProdOk = prodRes.status === 'fulfilled';
+  const fsProducts = fsProdOk ? prodRes.value : [];
+  const apiProducts = Array.isArray(backendData?.products) ? backendData.products : [];
 
-    if (prodRes.status === 'fulfilled') {
-      fsProducts = prodRes.value.docs
-        .map((d) => d.data() as Product)
-        .filter(isPublishedProduct);
-    }
-    if (catRes.status === 'fulfilled' && catRes.value.docs.length > 0) {
-      fsCategories = catRes.value.docs.map((d) => d.data() as Category);
-    }
-    if (colRes.status === 'fulfilled' && colRes.value.docs.length > 0) {
-      fsCollections = colRes.value.docs.map((d) => d.data() as Collection);
-    }
-    if (coupRes.status === 'fulfilled') {
-      fsCoupons = coupRes.value.docs.map((d) => d.data() as Coupon);
-    }
-    if (revRes.status === 'fulfilled') {
-      fsReviews = revRes.value.docs.map((d) => d.data() as Review);
-    }
-    if (setRes.status === 'fulfilled' && setRes.value.exists()) {
-      fsSettings = setRes.value.data() as Partial<StoreSettings>;
-    }
-  }
+  const mergedProducts = (fsProdOk ? fsProducts : apiProducts)
+    .filter(isPublishedProduct)
+    .sort((a, b) => {
+      const tA = Date.parse(a.updated_at || a.created_at || '') || 0;
+      const tB = Date.parse(b.updated_at || b.created_at || '') || 0;
+      return tB - tA;
+    });
 
-  const apiProducts = Array.isArray(backendStore?.products) ? backendStore.products : [];
-  const mergedProducts = mergeProductsByUpdatedAt(apiProducts, fsProducts).filter(
-    isPublishedProduct
-  );
+  // If both sources failed to load products, surface an explicit error instead of claiming catalog is empty
+  const productsError =
+    backendFailed && !fsProdOk
+      ? 'Unable to load products. Please try again.'
+      : null;
+
+  const fsCategories =
+    catRes.status === 'fulfilled' && catRes.value.docs.length > 0
+      ? catRes.value.docs.map((d) => d.data() as Category)
+      : undefined;
+  const fsCollections =
+    colRes.status === 'fulfilled' && colRes.value.docs.length > 0
+      ? colRes.value.docs.map((d) => d.data() as Collection)
+      : undefined;
+  const fsCoupons =
+    coupRes.status === 'fulfilled'
+      ? coupRes.value.docs.map((d) => d.data() as Coupon)
+      : [];
+  const fsReviews =
+    revRes.status === 'fulfilled'
+      ? revRes.value.docs.map((d) => d.data() as Review)
+      : [];
+  const fsSettings =
+    setRes.status === 'fulfilled' && setRes.value.exists()
+      ? (setRes.value.data() as Partial<StoreSettings>)
+      : undefined;
 
   const reviewMap = new Map<string, Review>();
   fsReviews.forEach((r) => reviewMap.set(r.id, r));
-  (backendStore?.reviews || []).forEach((r) => reviewMap.set(r.id, r));
+  (backendData?.reviews || []).forEach((r) => reviewMap.set(r.id, r));
 
   return {
-    connected: Boolean(backendStore?.connected || fsOk),
-    backendAvailable: Boolean(backendStore?.backendAvailable),
+    connected: Boolean(backendData?.connected || fsProdOk),
+    backendAvailable: Boolean(backendData?.backendAvailable),
     products: mergedProducts,
-    categories: backendStore?.categories || fsCategories,
-    collections: backendStore?.collections || fsCollections,
+    productsError,
+    categories: backendData?.categories || fsCategories,
+    collections: backendData?.collections || fsCollections,
     coupons: fsCoupons,
     reviews: Array.from(reviewMap.values()).sort(
       (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
     ),
     settings:
-      fsSettings || backendStore?.settings
-        ? { ...(fsSettings || {}), ...(backendStore?.settings || {}) }
+      fsSettings || backendData?.settings
+        ? { ...(fsSettings || {}), ...(backendData?.settings || {}) }
         : undefined,
   };
 }
@@ -225,14 +283,28 @@ export async function fetchAdminProductsCatalog(
   }
   let backendData: BackendAdminCatalogPayload | null = null;
 
+  const firebaseIdToken =
+    auth.currentUser && isVerifiedAdminUser(auth.currentUser)
+      ? await auth.currentUser.getIdToken().catch(() => '')
+      : '';
+
+  let backendReachable = false;
+
   try {
-    const res = await fetch('/api/admin/catalog', {
+    const headers: Record<string, string> = {};
+    if (sessionToken) headers['X-Admin-Session'] = sessionToken;
+    if (firebaseIdToken) headers['X-Firebase-Id-Token'] = firebaseIdToken;
+
+    const res = await fetch(apiUrl('/api/admin/catalog'), {
       method: 'GET',
       cache: 'no-store',
       credentials: 'include',
-      headers: sessionToken ? { 'X-Admin-Session': sessionToken } : undefined,
+      headers: Object.keys(headers).length > 0 ? headers : undefined,
     });
     const ct = (res.headers.get('content-type') || '').toLowerCase();
+    if (ct.includes('application/json')) {
+      backendReachable = true;
+    }
     if (res.ok && ct.includes('application/json')) {
       backendData = (await res.json()) as BackendAdminCatalogPayload;
     }
@@ -240,7 +312,6 @@ export async function fetchAdminProductsCatalog(
     backendData = null;
   }
 
-  // Also merge Firestore catalog only when verified Firebase Admin Google account is active
   let fsProducts: Product[] = [];
   let fsCategories: Category[] | undefined;
   let fsCollections: Collection[] | undefined;
@@ -250,7 +321,9 @@ export async function fetchAdminProductsCatalog(
 
   if (isVerifiedAdminUser(auth.currentUser)) {
     const [pS, cS, colS, cpS, oS, rS] = await Promise.allSettled([
-      getDocs(collection(db, 'products')),
+      getDocsFromServer(collection(db, 'products')).catch(() =>
+        getDocs(collection(db, 'products'))
+      ),
       getDocs(collection(db, 'categories')),
       getDocs(collection(db, 'collections')),
       getDocs(collection(db, 'coupons')),
@@ -287,7 +360,7 @@ export async function fetchAdminProductsCatalog(
   (backendData?.reviews || []).forEach((r) => reviewMap.set(r.id, r));
 
   return {
-    backendAvailable: Boolean(backendData),
+    backendAvailable: Boolean(backendData) || backendReachable,
     products: mergedProducts,
     categories:
       backendData?.categories && backendData.categories.length > 0

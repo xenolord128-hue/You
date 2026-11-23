@@ -30,6 +30,7 @@ import {
   ProductStatus,
 } from '../types/ecommerce';
 import { formatBDT, sanitizeExternalHref, sanitizeMediaUrl, sanitizePixelId } from '../lib/formatters';
+import { handleCloudMediaImageError } from '../lib/cloudMediaFallback';
 import { uploadMediaToFirebase } from '../services/mediaService';
 import {
   BRAND_LOCATION,
@@ -1646,8 +1647,10 @@ export const AdminPage: React.FC = () => {
                               <img
                                 src={thumbSrc}
                                 alt={p.name}
-                                onError={() =>
-                                  setBrokenImages((prev) => ({ ...prev, [p.id]: true }))
+                                onError={(e) =>
+                                  handleCloudMediaImageError(e.currentTarget, thumbSrc, () =>
+                                    setBrokenImages((prev) => ({ ...prev, [p.id]: true }))
+                                  )
                                 }
                                 className="w-[42px] h-[52px] rounded-[7px] shrink-0 object-cover bg-[#EFEFEE]"
                               />

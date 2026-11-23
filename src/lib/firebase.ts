@@ -19,7 +19,18 @@ export const ADMIN_EMAIL = ADMIN_EMAILS[0];
 const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
-export const storage = getStorage(app);
+export const STORAGE_BUCKET = (firebaseConfig.storageBucket || '').trim();
+export const storage = STORAGE_BUCKET
+  ? getStorage(app, `gs://${STORAGE_BUCKET.replace(/^gs:\/\//i, '')}`)
+  : getStorage(app);
+
+export function getFirebaseStorageConfigInfo() {
+  return {
+    projectId: (firebaseConfig.projectId || '').trim(),
+    storageBucket: STORAGE_BUCKET,
+    configured: Boolean(STORAGE_BUCKET),
+  };
+}
 
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });

@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { Heart, ShoppingBag, Star } from 'lucide-react';
 import { Product } from '../types/ecommerce';
 import { calculateDiscountPercent, formatBDT } from '../lib/formatters';
+import { handleCloudMediaImageError } from '../lib/cloudMediaFallback';
 import { useStore } from '../context/StoreContext';
 
 interface ProductCardProps {
@@ -58,7 +59,11 @@ export const ProductCard: React.FC<ProductCardProps> = ({
               loading="lazy"
               referrerPolicy="no-referrer"
               onLoad={() => setImgLoaded(true)}
-              onError={() => setImgError(true)}
+              onError={(e) =>
+                handleCloudMediaImageError(e.currentTarget, mainImage, () =>
+                  setImgError(true)
+                )
+              }
               className={`h-full w-full object-cover object-center transition-[transform,opacity] duration-500 ease-out [@media(hover:hover)]:group-hover:scale-105 ${
                 imgLoaded ? 'opacity-100' : 'opacity-0'
               }`}

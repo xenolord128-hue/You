@@ -8,30 +8,59 @@ service firebase.storage {
         && request.auth.token.email in ['lord79915@gmail.com', 'pythoxfashion@gmail.com'];
     }
 
+    function isAllowedImage() {
+      return request.resource != null
+        && request.resource.size > 0
+        && request.resource.size <= 10 * 1024 * 1024
+        && request.resource.contentType in [
+          'image/jpeg',
+          'image/jpg',
+          'image/pjpeg',
+          'image/png',
+          'image/x-png',
+          'image/webp'
+        ];
+    }
+
+    function isAllowedVideo() {
+      return request.resource != null
+        && request.resource.size > 0
+        && request.resource.size <= 50 * 1024 * 1024
+        && request.resource.contentType in [
+          'video/mp4',
+          'video/webm',
+          'video/quicktime'
+        ];
+    }
+
+    match /products/images/{allPaths=**} {
+      allow read: if true;
+      allow create, update: if isAdmin() && isAllowedImage();
+      allow delete: if isAdmin();
+    }
+
+    match /products/videos/{allPaths=**} {
+      allow read: if true;
+      allow create, update: if isAdmin() && isAllowedVideo();
+      allow delete: if isAdmin();
+    }
+
     match /products/{allPaths=**} {
       allow read: if true;
-      allow write: if isAdmin()
-        && request.resource != null
-        && (
-          (request.resource.contentType.matches('image/.*') && request.resource.size <= 10 * 1024 * 1024) ||
-          (request.resource.contentType.matches('video/.*') && request.resource.size <= 50 * 1024 * 1024)
-        );
+      allow create, update: if isAdmin() && (isAllowedImage() || isAllowedVideo());
+      allow delete: if isAdmin();
     }
 
     match /categories/{allPaths=**} {
       allow read: if true;
-      allow write: if isAdmin()
-        && request.resource != null
-        && request.resource.contentType.matches('image/.*')
-        && request.resource.size <= 10 * 1024 * 1024;
+      allow create, update: if isAdmin() && isAllowedImage();
+      allow delete: if isAdmin();
     }
 
     match /hero/{allPaths=**} {
       allow read: if true;
-      allow write: if isAdmin()
-        && request.resource != null
-        && request.resource.contentType.matches('image/.*')
-        && request.resource.size <= 10 * 1024 * 1024;
+      allow create, update: if isAdmin() && isAllowedImage();
+      allow delete: if isAdmin();
     }
 
     match /{allPaths=**} {

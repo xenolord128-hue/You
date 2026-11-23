@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { ArrowRight, Search, X } from 'lucide-react';
 import { useStore } from '../context/StoreContext';
 import { formatBDT } from '../lib/formatters';
+import { handleCloudMediaImageError } from '../lib/cloudMediaFallback';
 import { trackSearchEvent } from '../lib/metaPixel';
 import { apiUrl } from '../lib/api';
 
@@ -235,6 +236,7 @@ export const SearchOverlay: React.FC = () => {
                     <img
                       src={p.images[0]}
                       alt={p.name}
+                      onError={(e) => handleCloudMediaImageError(e.currentTarget, p.images[0])}
                       className="h-16 w-16 rounded-lg object-cover bg-[#EAE9E4] shrink-0"
                     />
                     <div className="min-w-0">

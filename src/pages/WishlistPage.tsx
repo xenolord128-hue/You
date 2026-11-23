@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { Heart, Trash2 } from 'lucide-react';
 import { useStore } from '../context/StoreContext';
 import { formatBDT } from '../lib/formatters';
+import { handleCloudMediaImageError } from '../lib/cloudMediaFallback';
 import { SeoHead } from '../components/SeoHead';
 
 export const WishlistPage: React.FC = () => {
@@ -53,6 +54,7 @@ export const WishlistPage: React.FC = () => {
                   src={product.images[0]}
                   alt={product.name}
                   referrerPolicy="no-referrer"
+                  onError={(e) => handleCloudMediaImageError(e.currentTarget, product.images[0])}
                   className="h-full w-full object-cover hover:scale-[1.03] transition-transform duration-300"
                 />
               </Link>

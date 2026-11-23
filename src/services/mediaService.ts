@@ -1,6 +1,18 @@
 import { doc, getDocFromServer, setDoc } from 'firebase/firestore';
-import { getDownloadURL, ref, uploadBytesResumable } from 'firebase/storage';
-import { auth, db, isVerifiedAdminUser, storage } from '../lib/firebase';
+import {
+  getDownloadURL,
+  ref,
+  uploadBytes,
+  uploadBytesResumable,
+  type UploadTask,
+} from 'firebase/storage';
+import {
+  auth,
+  db,
+  isVerifiedAdminUser,
+  STORAGE_BUCKET,
+  storage,
+} from '../lib/firebase';
 import { apiUrl } from '../lib/api';
 
 export type MediaFolder =
@@ -9,12 +21,73 @@ export type MediaFolder =
   | 'categories'
   | 'hero';
 
-const MAX_IMAGE_BYTES = 10 * 1024 * 1024; // 10 MB input limit before client compression
+export type MediaUploadStage =
+  | 'validating'
+  | 'preparing'
+  | 'uploading'
+  | 'verifying'
+  | 'retrying'
+  | 'complete'
+  | 'error'
+  | 'cancelled';
+
+export interface MediaUploadOptions {
+  signal?: AbortSignal;
+  uploadKey?: string;
+  onStageChange?: (stage: MediaUploadStage) => void;
+}
+
+export interface ValidatedMediaFile {
+  kind: 'image' | 'video';
+  detectedMime:
+    | 'image/jpeg'
+    | 'image/png'
+    | 'image/webp'
+    | 'video/mp4'
+    | 'video/webm'
+    | 'video/quicktime';
+  sizeBytes: number;
+  width?: number;
+  height?: number;
+  durationSec?: number;
+}
+
+export class MediaUploadError extends Error {
+  code: string;
+  isPermanent: boolean;
+  stage: MediaUploadStage;
+
+  constructor(
+    message: string,
+    opts: { code: string; isPermanent: boolean; stage?: MediaUploadStage }
+  ) {
+    super(message);
+    this.name = 'MediaUploadError';
+    this.code = opts.code;
+    this.isPermanent = opts.isPermanent;
+    this.stage = opts.stage || 'error';
+  }
+}
+
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024; // 10 MB
 const MAX_VIDEO_BYTES = 50 * 1024 * 1024; // 50 MB
-const DURABLE_IMAGE_TARGET_BYTES = 540 * 1024; // Guarantees <= 720 KB base64 inside Firestore 1 MiB doc & rules
+const SMALL_IMAGE_DIRECT_UPLOAD_BYTES = 256 * 1024; // Use uploadBytes for <= 256 KB
+const STORAGE_MAX_IMAGE_OPTIMIZE_BYTES = 1.6 * 1024 * 1024; // Keep cloud images crisp & mobile-fast
+const STORAGE_IMAGE_MAX_DIM = 2000;
+
+const DURABLE_IMAGE_TARGET_BYTES = 540 * 1024; // <= 720 KB base64 inside Firestore 1 MiB doc & rules
 const DURABLE_IMAGE_MAX_HARD_BYTES = 680 * 1024;
 const DURABLE_IMAGE_BYPASS_BYTES = 420 * 1024;
 const DURABLE_IMAGE_MAX_DIM = 1600;
+
+const STORAGE_PROBE_TIMEOUT_MS = 3_500;
+const STORAGE_PROBE_SUCCESS_TTL_MS = 5 * 60 * 1000;
+const STORAGE_PROBE_FAILURE_TTL_MS = 45 * 1000;
+
+const HANDSHAKE_STALL_MS = 15_000;
+const IMAGE_PROGRESS_STALL_MS = 35_000;
+const VIDEO_PROGRESS_STALL_MS = 60_000;
+const MAX_TRANSIENT_RETRIES = 2;
 
 const ALLOWED_IMAGE_MIME = new Set([
   'image/jpeg',
@@ -31,10 +104,75 @@ const ALLOWED_VIDEO_MIME = new Set([
   'video/quicktime',
 ]);
 
+interface ActiveUploadHandle {
+  cancel: () => void;
+  promise: Promise<string>;
+}
+
+const activeUploadRegistry = new Map<string, ActiveUploadHandle>();
+
 let inMemoryAdminSessionToken = '';
+
+interface StorageBucketProbeResult {
+  available: boolean;
+  reason?: 'unconfigured' | 'bucket-not-found' | 'cors-or-network' | 'offline';
+  httpStatus?: number;
+  checkedAt: number;
+}
+
+let cachedBucketProbe: StorageBucketProbeResult | null = null;
 
 export function setMediaSessionToken(token: string): void {
   inMemoryAdminSessionToken = token || '';
+}
+
+export function resetStorageProbeCache(): void {
+  cachedBucketProbe = null;
+}
+
+function logUploadStage(
+  stage:
+    | 'Validation'
+    | 'Start'
+    | 'Progress'
+    | 'Retry'
+    | 'Complete'
+    | 'DownloadURL'
+    | 'Error'
+    | 'Cancelled'
+    | 'DuplicatePrevented',
+  details: Record<string, unknown>
+): void {
+  const safePayload = {
+    ts: new Date().toISOString(),
+    ...details,
+  };
+  if (stage === 'Error') {
+    console.error(`[Upload:${stage}]`, safePayload);
+  } else if (stage === 'Retry' || stage === 'Cancelled' || stage === 'DuplicatePrevented') {
+    console.warn(`[Upload:${stage}]`, safePayload);
+  } else {
+    console.info(`[Upload:${stage}]`, safePayload);
+  }
+}
+
+export function cancelActiveMediaUpload(uploadKey: string): boolean {
+  const handle = activeUploadRegistry.get(uploadKey);
+  if (!handle) return false;
+  handle.cancel();
+  activeUploadRegistry.delete(uploadKey);
+  return true;
+}
+
+export function cancelAllActiveMediaUploads(): void {
+  for (const [key, handle] of activeUploadRegistry.entries()) {
+    try {
+      handle.cancel();
+    } catch {
+      // ignore
+    }
+    activeUploadRegistry.delete(key);
+  }
 }
 
 function sanitizeFileName(raw: string, fallbackExt: string): string {
@@ -47,7 +185,308 @@ function sanitizeFileName(raw: string, fallbackExt: string): string {
   return cleaned;
 }
 
-function normalizeDurableMime(rawMime: string, filename: string): 'image/jpeg' | 'image/png' | 'image/webp' {
+export function isValidUploadedMediaUrl(url: string | undefined | null): boolean {
+  if (typeof url !== 'string') return false;
+  const trimmed = url.trim();
+  if (!trimmed) return false;
+  if (
+    trimmed.startsWith('blob:') ||
+    trimmed.startsWith('data:') ||
+    trimmed.startsWith('javascript:')
+  ) {
+    return false;
+  }
+  if (trimmed.startsWith('/api/media/') || trimmed.startsWith('/uploads/')) {
+    return !trimmed.includes('..');
+  }
+  try {
+    const parsed = new URL(trimmed);
+    return parsed.protocol === 'https:' || parsed.protocol === 'http:';
+  } catch {
+    return false;
+  }
+}
+
+function asciiAt(bytes: Uint8Array, start: number, end: number): string {
+  let out = '';
+  for (let i = start; i < end && i < bytes.length; i += 1) {
+    out += String.fromCharCode(bytes[i]);
+  }
+  return out;
+}
+
+export function detectMediaSignature(
+  headerBytes: Uint8Array,
+  filename: string
+): ValidatedMediaFile['detectedMime'] | null {
+  if (headerBytes.length < 4) return null;
+
+  // JPEG: FF D8 FF
+  if (headerBytes[0] === 0xff && headerBytes[1] === 0xd8 && headerBytes[2] === 0xff) {
+    return 'image/jpeg';
+  }
+
+  // PNG: 89 50 4E 47 0D 0A 1A 0A
+  if (
+    headerBytes.length >= 8 &&
+    headerBytes[0] === 0x89 &&
+    headerBytes[1] === 0x50 &&
+    headerBytes[2] === 0x4e &&
+    headerBytes[3] === 0x47 &&
+    headerBytes[4] === 0x0d &&
+    headerBytes[5] === 0x0a &&
+    headerBytes[6] === 0x1a &&
+    headerBytes[7] === 0x0a
+  ) {
+    return 'image/png';
+  }
+
+  // WEBP: RIFF....WEBP
+  if (
+    headerBytes.length >= 12 &&
+    asciiAt(headerBytes, 0, 4) === 'RIFF' &&
+    asciiAt(headerBytes, 8, 12) === 'WEBP'
+  ) {
+    return 'image/webp';
+  }
+
+  // WEBM / Matroska: 1A 45 DF A3
+  if (
+    headerBytes[0] === 0x1a &&
+    headerBytes[1] === 0x45 &&
+    headerBytes[2] === 0xdf &&
+    headerBytes[3] === 0xa3
+  ) {
+    return 'video/webm';
+  }
+
+  // MP4 / QuickTime ISO BMFF: box size + ftyp/moov/mdat/wide/free/pnot
+  if (headerBytes.length >= 8) {
+    const boxType = asciiAt(headerBytes, 4, 8);
+    if (
+      boxType === 'ftyp' ||
+      boxType === 'moov' ||
+      boxType === 'mdat' ||
+      boxType === 'wide' ||
+      boxType === 'free' ||
+      boxType === 'pnot'
+    ) {
+      const majorBrand = headerBytes.length >= 12 ? asciiAt(headerBytes, 8, 12) : '';
+      if (majorBrand === 'qt  ' || /\.mov$/i.test(filename)) {
+        return 'video/quicktime';
+      }
+      return 'video/mp4';
+    }
+  }
+
+  return null;
+}
+
+function loadImageFromFile(file: File): Promise<HTMLImageElement> {
+  if (typeof URL === 'undefined' || typeof Image === 'undefined') {
+    return Promise.reject(new Error('Image decoding unavailable in this runtime.'));
+  }
+  const objectUrl = URL.createObjectURL(file);
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      if ((img.naturalWidth || 0) <= 0 || (img.naturalHeight || 0) <= 0) {
+        reject(new Error(`${file.name} decoded with zero dimensions and appears corrupted.`));
+        return;
+      }
+      resolve(img);
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error(`${file.name} could not be decoded as a valid image. The file may be corrupted.`));
+    };
+    img.src = objectUrl;
+  });
+}
+
+function probeVideoMetadata(
+  file: File
+): Promise<{ width: number; height: number; durationSec: number }> {
+  if (typeof document === 'undefined' || typeof URL === 'undefined') {
+    return Promise.resolve({ width: 0, height: 0, durationSec: 0 });
+  }
+  return new Promise((resolve, reject) => {
+    const objectUrl = URL.createObjectURL(file);
+    const videoEl = document.createElement('video');
+    videoEl.preload = 'metadata';
+    videoEl.muted = true;
+
+    let done = false;
+    const cleanup = () => {
+      window.clearTimeout(timer);
+      videoEl.onloadedmetadata = null;
+      videoEl.onerror = null;
+      videoEl.removeAttribute('src');
+      videoEl.load();
+      URL.revokeObjectURL(objectUrl);
+    };
+
+    const timer = window.setTimeout(() => {
+      if (done) return;
+      done = true;
+      cleanup();
+      // Do not fail valid large MOV/MP4 if browser codec metadata takes >4s
+      resolve({ width: 0, height: 0, durationSec: 0 });
+    }, 4_000);
+
+    videoEl.onloadedmetadata = () => {
+      if (done) return;
+      done = true;
+      const width = videoEl.videoWidth || 0;
+      const height = videoEl.videoHeight || 0;
+      const durationSec = Number.isFinite(videoEl.duration) ? videoEl.duration : 0;
+      cleanup();
+      resolve({ width, height, durationSec });
+    };
+
+    videoEl.onerror = () => {
+      if (done) return;
+      done = true;
+      cleanup();
+      reject(
+        new MediaUploadError(
+          `${file.name} could not be read as a playable video. Verify it is a valid MP4, WEBM, or MOV file.`,
+          { code: 'CORRUPTED_MEDIA', isPermanent: true, stage: 'validating' }
+        )
+      );
+    };
+
+    videoEl.src = objectUrl;
+  });
+}
+
+/**
+ * Validates size, extension/MIME, magic-byte file signature, and browser decodability
+ * before starting any network upload.
+ */
+export async function validateMediaFile(
+  file: File,
+  kind: 'image' | 'video'
+): Promise<ValidatedMediaFile> {
+  if (!(file instanceof File) && typeof (file as Blob)?.arrayBuffer !== 'function') {
+    throw new MediaUploadError('Invalid file provided.', {
+      code: 'VALIDATION_ERROR',
+      isPermanent: true,
+      stage: 'validating',
+    });
+  }
+
+  const maxBytes = kind === 'video' ? MAX_VIDEO_BYTES : MAX_IMAGE_BYTES;
+  if (file.size <= 0) {
+    throw new MediaUploadError(`${file.name}: file is empty (0 bytes).`, {
+      code: 'EMPTY_FILE',
+      isPermanent: true,
+      stage: 'validating',
+    });
+  }
+  if (file.size > maxBytes) {
+    throw new MediaUploadError(
+      kind === 'video'
+        ? `${file.name} (${(file.size / (1024 * 1024)).toFixed(1)} MB) exceeds the 50 MB video upload limit.`
+        : `${file.name} (${(file.size / (1024 * 1024)).toFixed(1)} MB) exceeds the 10 MB image upload limit.`,
+      {
+        code: 'FILE_TOO_LARGE',
+        isPermanent: true,
+        stage: 'validating',
+      }
+    );
+  }
+
+  const extMatch =
+    kind === 'video'
+      ? /\.(mp4|webm|mov)$/i.test(file.name)
+      : /\.(jpg|jpeg|png|webp)$/i.test(file.name);
+  const mimeLower = (file.type || '').toLowerCase();
+  const mimeAllowed =
+    kind === 'video'
+      ? ALLOWED_VIDEO_MIME.has(mimeLower)
+      : ALLOWED_IMAGE_MIME.has(mimeLower);
+
+  if (mimeLower && !mimeAllowed && !extMatch) {
+    throw new MediaUploadError(
+      kind === 'video'
+        ? `${file.name}: unsupported video format (${mimeLower}). Allowed: MP4, WEBM, MOV.`
+        : `${file.name}: unsupported image format (${mimeLower}). Allowed: JPG, PNG, WEBP.`,
+      { code: 'UNSUPPORTED_FORMAT', isPermanent: true, stage: 'validating' }
+    );
+  }
+
+  let headerBytes: Uint8Array;
+  try {
+    const headerBuf = await file.slice(0, 32).arrayBuffer();
+    headerBytes = new Uint8Array(headerBuf);
+  } catch {
+    throw new MediaUploadError(`Unable to read ${file.name}. The file may be inaccessible or corrupted.`, {
+      code: 'UNREADABLE_FILE',
+      isPermanent: true,
+      stage: 'validating',
+    });
+  }
+
+  const detectedMime = detectMediaSignature(headerBytes, file.name);
+  const expectedPrefix = kind === 'video' ? 'video/' : 'image/';
+  if (!detectedMime || !detectedMime.startsWith(expectedPrefix)) {
+    throw new MediaUploadError(
+      kind === 'video'
+        ? `${file.name} is corrupted or not a genuine MP4, WEBM, or MOV video.`
+        : `${file.name} is corrupted or not a genuine JPG, PNG, or WEBP image.`,
+      { code: 'INVALID_MAGIC_BYTES', isPermanent: true, stage: 'validating' }
+    );
+  }
+
+  let width: number | undefined;
+  let height: number | undefined;
+  let durationSec: number | undefined;
+
+  if (typeof document !== 'undefined') {
+    if (kind === 'image') {
+      const img = await loadImageFromFile(file).catch((err) => {
+        throw new MediaUploadError(
+          err instanceof Error ? err.message : `${file.name} appears corrupted.`,
+          { code: 'CORRUPTED_MEDIA', isPermanent: true, stage: 'validating' }
+        );
+      });
+      width = img.naturalWidth;
+      height = img.naturalHeight;
+    } else {
+      const meta = await probeVideoMetadata(file);
+      width = meta.width || undefined;
+      height = meta.height || undefined;
+      durationSec = meta.durationSec || undefined;
+    }
+  }
+
+  logUploadStage('Validation', {
+    name: file.name,
+    kind,
+    sizeBytes: file.size,
+    declaredMime: mimeLower || '(none)',
+    detectedMime,
+    width,
+    height,
+    durationSec,
+  });
+
+  return {
+    kind,
+    detectedMime,
+    sizeBytes: file.size,
+    width,
+    height,
+    durationSec,
+  };
+}
+
+function normalizeDurableMime(
+  rawMime: string,
+  filename: string
+): 'image/jpeg' | 'image/png' | 'image/webp' {
   const lower = rawMime.toLowerCase();
   if (lower === 'image/png' || lower === 'image/x-png' || /\.png$/i.test(filename)) {
     return 'image/png';
@@ -68,22 +507,51 @@ function canvasToBlob(
   });
 }
 
-async function loadImageFromFile(file: File): Promise<HTMLImageElement> {
-  const objectUrl = URL.createObjectURL(file);
-  try {
-    return await new Promise<HTMLImageElement>((resolve, reject) => {
-      const img = new Image();
-      img.onload = () => resolve(img);
-      img.onerror = () => reject(new Error(`Unable to decode image ${file.name}.`));
-      img.src = objectUrl;
-    });
-  } finally {
-    URL.revokeObjectURL(objectUrl);
+async function optimizeImageForStorageBucket(
+  file: File,
+  detectedMime: 'image/jpeg' | 'image/png' | 'image/webp'
+): Promise<{ file: File; mimeType: 'image/jpeg' | 'image/png' | 'image/webp' }> {
+  if (typeof document === 'undefined' || file.size <= STORAGE_MAX_IMAGE_OPTIMIZE_BYTES) {
+    return { file, mimeType: detectedMime };
   }
+
+  try {
+    const img = await loadImageFromFile(file);
+    const naturalW = img.naturalWidth;
+    const naturalH = img.naturalHeight;
+    const scale = Math.min(1, STORAGE_IMAGE_MAX_DIM / Math.max(naturalW, naturalH));
+    const targetW = Math.max(200, Math.round(naturalW * scale));
+    const targetH = Math.max(200, Math.round(naturalH * scale));
+
+    const canvas = document.createElement('canvas');
+    canvas.width = targetW;
+    canvas.height = targetH;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return { file, mimeType: detectedMime };
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(img, 0, 0, targetW, targetH);
+
+    const baseName = file.name.replace(/\.[^.]+$/, '') || 'product-image';
+    const blob = await canvasToBlob(canvas, 'image/webp', 0.88);
+    if (blob && blob.size > 0 && blob.size < file.size) {
+      return {
+        file: new File([blob], `${baseName}.webp`, {
+          type: 'image/webp',
+          lastModified: Date.now(),
+        }),
+        mimeType: 'image/webp',
+      };
+    }
+  } catch {
+    // fallback to original validated file
+  }
+
+  return { file, mimeType: detectedMime };
 }
 
 /**
- * Compresses large upload images into web-optimized <= 640 KB WebP/JPEG files
+ * Compresses large upload images into web-optimized <= 680 KB WebP/JPEG files
  * so they persist permanently inside Firestore `media_assets` and load fast on mobile.
  */
 export async function compressImageForDurableStorage(file: File): Promise<File> {
@@ -159,8 +627,9 @@ export async function compressImageForDurableStorage(file: File): Promise<File> 
   if (file.size <= DURABLE_IMAGE_MAX_HARD_BYTES) {
     return file;
   }
-  throw new Error(
-    `${file.name} (${Math.round(file.size / 1024)} KB) could not be compressed under 680 KB for cloud storage. Please choose a smaller image.`
+  throw new MediaUploadError(
+    `${file.name} (${Math.round(file.size / 1024)} KB) could not be compressed under 680 KB for cloud storage. Please choose a smaller image.`,
+    { code: 'COMPRESSION_LIMIT_EXCEEDED', isPermanent: true, stage: 'preparing' }
   );
 }
 
@@ -178,21 +647,44 @@ async function fileToBase64(file: File): Promise<string> {
 
 async function uploadImageDirectToFirestoreMediaAssets(
   file: File,
-  onProgress?: (pct: number) => void
+  onProgress?: (pct: number) => void,
+  signal?: AbortSignal
 ): Promise<string> {
+  if (signal?.aborted) {
+    throw new MediaUploadError(`Upload cancelled for ${file.name}.`, {
+      code: 'ABORTED',
+      isPermanent: true,
+      stage: 'cancelled',
+    });
+  }
+
   const mimeType = normalizeDurableMime(file.type, file.name);
   if (file.size > 700 * 1024) {
-    throw new Error(
+    throw new MediaUploadError(
       `${file.name} is still too large after compression (${Math.round(
         file.size / 1024
-      )} KB). Please choose a smaller image under 700 KB.`
+      )} KB). Please choose a smaller image under 700 KB.`,
+      { code: 'FIRESTORE_ASSET_TOO_LARGE', isPermanent: true, stage: 'preparing' }
     );
   }
+
   onProgress?.(40);
   const dataBase64 = await fileToBase64(file);
-  if (dataBase64.length > 960_000) {
-    throw new Error(`${file.name} exceeds Firestore document size limits.`);
+  if (signal?.aborted) {
+    throw new MediaUploadError(`Upload cancelled for ${file.name}.`, {
+      code: 'ABORTED',
+      isPermanent: true,
+      stage: 'cancelled',
+    });
   }
+  if (dataBase64.length > 960_000) {
+    throw new MediaUploadError(`${file.name} exceeds Firestore document size limits.`, {
+      code: 'FIRESTORE_ASSET_TOO_LARGE',
+      isPermanent: true,
+      stage: 'preparing',
+    });
+  }
+
   const mediaId = `image-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
   const assetPayload = {
     id: mediaId,
@@ -208,10 +700,20 @@ async function uploadImageDirectToFirestoreMediaAssets(
   await setDoc(doc(db, 'media_assets', mediaId), assetPayload);
   const verified = await getDocFromServer(doc(db, 'media_assets', mediaId));
   if (!verified.exists()) {
-    throw new Error(`Failed to verify persistent cloud storage for ${file.name}.`);
+    throw new MediaUploadError(
+      `Failed to verify persistent cloud storage for ${file.name}.`,
+      { code: 'FIRESTORE_VERIFY_FAILED', isPermanent: false, stage: 'verifying' }
+    );
   }
+
+  const finalUrl = `/api/media/${mediaId}`;
   onProgress?.(100);
-  return `/api/media/${mediaId}`;
+  logUploadStage('DownloadURL', {
+    provider: 'firestore-media-assets',
+    name: file.name,
+    url: finalUrl,
+  });
+  return finalUrl;
 }
 
 interface BackendUploadResult {
@@ -222,9 +724,11 @@ interface BackendUploadResult {
 function uploadViaBackendXhr(
   file: File,
   kind: 'image' | 'video',
+  mimeType: string,
   sessionToken: string,
   firebaseIdToken: string,
-  onProgress?: (pct: number) => void
+  onProgress?: (pct: number) => void,
+  signal?: AbortSignal
 ): Promise<BackendUploadResult> {
   const timeoutMs = kind === 'video' ? 90_000 : 25_000;
   const endpoint = apiUrl(
@@ -234,29 +738,60 @@ function uploadViaBackendXhr(
   );
 
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(
+        new MediaUploadError(`Upload cancelled for ${file.name}.`, {
+          code: 'ABORTED',
+          isPermanent: true,
+          stage: 'cancelled',
+        })
+      );
+      return;
+    }
+
     const xhr = new XMLHttpRequest();
     let settled = false;
 
-    const finishError = (err: Error) => {
+    const cleanupSignal = () => {
+      signal?.removeEventListener('abort', handleAbort);
+    };
+
+    const finishError = (err: MediaUploadError) => {
       if (settled) return;
       settled = true;
+      cleanupSignal();
       reject(err);
     };
 
     const finishSuccess = (result: BackendUploadResult) => {
       if (settled) return;
       settled = true;
+      cleanupSignal();
       onProgress?.(100);
       resolve(result);
     };
 
+    const handleAbort = () => {
+      try {
+        xhr.abort();
+      } catch {
+        // ignore
+      }
+      finishError(
+        new MediaUploadError(`Upload cancelled for ${file.name}.`, {
+          code: 'ABORTED',
+          isPermanent: true,
+          stage: 'cancelled',
+        })
+      );
+    };
+
+    signal?.addEventListener('abort', handleAbort, { once: true });
+
     xhr.open('POST', endpoint, true);
     xhr.withCredentials = true;
     xhr.timeout = timeoutMs;
-    xhr.setRequestHeader(
-      'Content-Type',
-      file.type || (kind === 'video' ? 'video/mp4' : 'image/jpeg')
-    );
+    xhr.setRequestHeader('Content-Type', mimeType);
     if (sessionToken) {
       xhr.setRequestHeader('X-Admin-Session', sessionToken);
     }
@@ -296,235 +831,821 @@ function uploadViaBackendXhr(
 
       if (xhr.status === 401 || xhr.status === 403) {
         finishError(
-          new Error(
-            payload?.error || 'Admin session expired or unauthorized. Please log in again.'
+          new MediaUploadError(
+            payload?.error || 'Admin session expired or unauthorized. Please sign in again.',
+            { code: 'UNAUTHORIZED', isPermanent: true, stage: 'uploading' }
           )
         );
         return;
       }
 
       if (!contentType.includes('application/json')) {
-        const err = new Error('BACKEND_UNAVAILABLE') as Error & { code?: string };
-        err.code = 'BACKEND_UNAVAILABLE';
-        finishError(err);
+        finishError(
+          new MediaUploadError('BACKEND_UNAVAILABLE', {
+            code: 'BACKEND_UNAVAILABLE',
+            isPermanent: true,
+            stage: 'uploading',
+          })
+        );
         return;
       }
 
+      const isTransientStatus =
+        xhr.status === 408 || xhr.status === 429 || xhr.status >= 500;
       finishError(
-        new Error(
+        new MediaUploadError(
           payload?.error ||
-            `Upload failed with status ${xhr.status}. Please verify the file and try again.`
+            `Upload failed with status ${xhr.status}. Please verify the file and try again.`,
+          {
+            code: `HTTP_${xhr.status}`,
+            isPermanent: !isTransientStatus,
+            stage: 'uploading',
+          }
         )
       );
     };
 
     xhr.onerror = () => {
-      finishError(new Error('Network error while uploading media. Please check your connection.'));
+      finishError(
+        new MediaUploadError('Network error while uploading media. Please check your connection.', {
+          code: 'NETWORK_ERROR',
+          isPermanent: typeof navigator !== 'undefined' && navigator.onLine === false,
+          stage: 'uploading',
+        })
+      );
     };
 
     xhr.ontimeout = () => {
       finishError(
-        new Error(
-          `${file.name} upload timed out after ${Math.round(timeoutMs / 1000)}s. Please try again.`
+        new MediaUploadError(
+          `${file.name} upload timed out after ${Math.round(timeoutMs / 1000)}s. Please try again.`,
+          { code: 'UPLOAD_TIMEOUT', isPermanent: false, stage: 'uploading' }
         )
       );
     };
 
     xhr.onabort = () => {
-      finishError(new Error(`Upload cancelled for ${file.name}.`));
+      finishError(
+        new MediaUploadError(`Upload cancelled for ${file.name}.`, {
+          code: 'ABORTED',
+          isPermanent: true,
+          stage: 'cancelled',
+        })
+      );
     };
 
     try {
       xhr.send(file);
     } catch (err) {
       finishError(
-        err instanceof Error ? err : new Error(`Unable to start upload for ${file.name}.`)
+        new MediaUploadError(
+          err instanceof Error ? err.message : `Unable to start upload for ${file.name}.`,
+          { code: 'XHR_SEND_FAILED', isPermanent: false, stage: 'uploading' }
+        )
       );
     }
   });
 }
 
-function uploadViaFirebaseStorage(
+/**
+ * Probes the configured Firebase Storage bucket (`pythoxworld.firebasestorage.app`)
+ * before invoking `uploadBytesResumable`, preventing blind retry loops that culminate in
+ * `storage/retry-limit-exceeded` when the Storage bucket is unprovisioned (HTTP 404) or offline.
+ */
+export async function checkFirebaseStorageBucketStatus(): Promise<StorageBucketProbeResult> {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    return {
+      available: false,
+      reason: 'offline',
+      checkedAt: Date.now(),
+    };
+  }
+
+  if (!STORAGE_BUCKET) {
+    return {
+      available: false,
+      reason: 'unconfigured',
+      checkedAt: Date.now(),
+    };
+  }
+
+  const now = Date.now();
+  if (cachedBucketProbe) {
+    const ttl = cachedBucketProbe.available
+      ? STORAGE_PROBE_SUCCESS_TTL_MS
+      : STORAGE_PROBE_FAILURE_TTL_MS;
+    if (now - cachedBucketProbe.checkedAt < ttl) {
+      return cachedBucketProbe;
+    }
+  }
+
+  const controller = new AbortController();
+  const timer = globalThis.setTimeout(() => controller.abort(), STORAGE_PROBE_TIMEOUT_MS);
+
+  try {
+    const probeUrl = `https://firebasestorage.googleapis.com/v0/b/${encodeURIComponent(
+      STORAGE_BUCKET
+    )}/o?maxResults=1`;
+    const res = await fetch(probeUrl, {
+      method: 'GET',
+      mode: 'cors',
+      cache: 'no-store',
+      signal: controller.signal,
+    });
+
+    if (res.status === 404) {
+      cachedBucketProbe = {
+        available: false,
+        reason: 'bucket-not-found',
+        httpStatus: 404,
+        checkedAt: Date.now(),
+      };
+      return cachedBucketProbe;
+    }
+
+    // 200, 401, or 403 proves the Storage bucket exists and responds cleanly over CORS
+    if (res.ok || res.status === 401 || res.status === 403) {
+      cachedBucketProbe = {
+        available: true,
+        httpStatus: res.status,
+        checkedAt: Date.now(),
+      };
+      return cachedBucketProbe;
+    }
+
+    cachedBucketProbe = {
+      available: false,
+      reason: 'cors-or-network',
+      httpStatus: res.status,
+      checkedAt: Date.now(),
+    };
+    return cachedBucketProbe;
+  } catch {
+    cachedBucketProbe = {
+      available: false,
+      reason:
+        typeof navigator !== 'undefined' && navigator.onLine === false
+          ? 'offline'
+          : 'cors-or-network',
+      checkedAt: Date.now(),
+    };
+    return cachedBucketProbe;
+  } finally {
+    globalThis.clearTimeout(timer);
+  }
+}
+
+export function classifyFirebaseStorageError(
+  error: unknown,
+  filename: string
+): MediaUploadError {
+  if (error instanceof MediaUploadError) return error;
+
+  const code = ((error as { code?: string })?.code || '').toLowerCase();
+  const rawMessage = error instanceof Error ? error.message : String(error || '');
+  const lowerMsg = rawMessage.toLowerCase();
+
+  if (code === 'storage/canceled' || code === 'aborted') {
+    return new MediaUploadError(`Upload cancelled for ${filename}.`, {
+      code: 'storage/canceled',
+      isPermanent: true,
+      stage: 'cancelled',
+    });
+  }
+
+  if (code === 'storage/unauthorized') {
+    return new MediaUploadError(
+      'Firebase Storage permission denied (storage/unauthorized). Verify your Google Admin sign-in and published storage.rules.',
+      { code, isPermanent: true, stage: 'error' }
+    );
+  }
+
+  if (code === 'storage/unauthenticated') {
+    return new MediaUploadError(
+      'Admin authentication expired (storage/unauthenticated). Sign in with Google Admin and retry.',
+      { code, isPermanent: true, stage: 'error' }
+    );
+  }
+
+  if (
+    code === 'storage/bucket-not-found' ||
+    code === 'storage/project-not-found' ||
+    code === 'storage/no-default-bucket' ||
+    lowerMsg.includes('bucket does not exist')
+  ) {
+    return new MediaUploadError(
+      `Firebase Storage bucket "${STORAGE_BUCKET}" was not found. Enable Storage in Firebase Console -> Storage -> Get Started.`,
+      { code: code || 'storage/bucket-not-found', isPermanent: true, stage: 'error' }
+    );
+  }
+
+  if (code === 'storage/quota-exceeded') {
+    return new MediaUploadError(
+      'Firebase Storage quota exceeded. Upgrade your Firebase Storage plan or free space.',
+      { code, isPermanent: true, stage: 'error' }
+    );
+  }
+
+  if (
+    code === 'storage/invalid-argument' ||
+    code === 'storage/invalid-checksum' ||
+    code === 'storage/invalid-format'
+  ) {
+    return new MediaUploadError(
+      `${filename}: rejected by Firebase Storage (${code}). Check file integrity and format.`,
+      { code, isPermanent: true, stage: 'error' }
+    );
+  }
+
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    return new MediaUploadError(
+      `Internet connection lost while uploading ${filename}. Reconnect and click Retry.`,
+      { code: 'OFFLINE', isPermanent: true, stage: 'error' }
+    );
+  }
+
+  if (code === 'storage/retry-limit-exceeded') {
+    return new MediaUploadError(
+      `Firebase Storage upload could not complete for ${filename} (storage/retry-limit-exceeded). Check Firebase Storage bucket status, CORS policy, or network stability and try again.`,
+      { code, isPermanent: false, stage: 'error' }
+    );
+  }
+
+  if (code === 'storage/unknown' || code === 'network_stall') {
+    return new MediaUploadError(
+      `Temporary network interruption while uploading ${filename}.`,
+      { code: code || 'storage/unknown', isPermanent: false, stage: 'error' }
+    );
+  }
+
+  return new MediaUploadError(
+    rawMessage || `Failed to upload ${filename} to Firebase Storage.`,
+    { code: code || 'storage/upload-failed', isPermanent: false, stage: 'error' }
+  );
+}
+
+async function attemptSingleFirebaseStorageUpload(
   file: File,
   folder: MediaFolder,
+  mimeType: string,
   isVideo: boolean,
-  onProgress?: (pct: number) => void
+  onProgress?: (pct: number) => void,
+  signal?: AbortSignal
 ): Promise<string> {
-  storage.maxUploadRetryTime = 12_000;
-  storage.maxOperationRetryTime = 12_000;
+  if (signal?.aborted) {
+    throw new MediaUploadError(`Upload cancelled for ${file.name}.`, {
+      code: 'ABORTED',
+      isPermanent: true,
+      stage: 'cancelled',
+    });
+  }
 
   const fallbackExt = isVideo ? '.mp4' : '.jpg';
   const objectPath = `${folder}/${Date.now()}-${Math.floor(100 + Math.random() * 899)}-${sanitizeFileName(file.name, fallbackExt)}`;
   const storageRef = ref(storage, objectPath);
-  const timeoutMs = isVideo ? 75_000 : 20_000;
+  const metadata = {
+    contentType: mimeType,
+    cacheControl: 'public, max-age=31536000',
+  };
 
-  return new Promise((resolve, reject) => {
+  logUploadStage('Start', {
+    provider: 'firebase-storage',
+    bucket: STORAGE_BUCKET,
+    objectPath,
+    sizeBytes: file.size,
+    contentType: mimeType,
+    mode: !isVideo && file.size <= SMALL_IMAGE_DIRECT_UPLOAD_BYTES ? 'uploadBytes' : 'uploadBytesResumable',
+  });
+
+  // Fast single-shot upload for small images (<= 256 KB)
+  if (!isVideo && file.size <= SMALL_IMAGE_DIRECT_UPLOAD_BYTES) {
+    onProgress?.(25);
+    const snapshot = await uploadBytes(storageRef, file, metadata);
+    if (signal?.aborted) {
+      throw new MediaUploadError(`Upload cancelled for ${file.name}.`, {
+        code: 'ABORTED',
+        isPermanent: true,
+        stage: 'cancelled',
+      });
+    }
+    onProgress?.(92);
+    const url = await getDownloadURL(snapshot.ref);
+    if (!isValidUploadedMediaUrl(url)) {
+      throw new MediaUploadError(`Invalid Firebase Storage download URL returned for ${file.name}.`, {
+        code: 'INVALID_DOWNLOAD_URL',
+        isPermanent: true,
+        stage: 'verifying',
+      });
+    }
+    onProgress?.(100);
+    logUploadStage('Complete', { provider: 'firebase-storage', objectPath, sizeBytes: file.size });
+    logUploadStage('DownloadURL', { provider: 'firebase-storage', objectPath, url });
+    return url;
+  }
+
+  // Resumable upload with stall detection + clean task cancellation
+  return new Promise<string>((resolve, reject) => {
     let settled = false;
-    const task = uploadBytesResumable(storageRef, file, {
-      contentType: file.type || (isVideo ? 'video/mp4' : 'image/jpeg'),
-      cacheControl: 'public, max-age=31536000',
-    });
+    let task: UploadTask | null = null;
+    let lastBytes = 0;
+    let lastProgressAt = Date.now();
+    let stallTimer: number | undefined;
+    let lastLoggedPct = -1;
 
-    const timeoutTimer = window.setTimeout(() => {
+    const cleanup = () => {
+      if (stallTimer !== undefined) {
+        window.clearInterval(stallTimer);
+      }
+      signal?.removeEventListener('abort', handleAbort);
+    };
+
+    const failWith = (err: MediaUploadError) => {
       if (settled) return;
       settled = true;
-      try {
-        task.cancel();
-      } catch {
-        // ignore cancel errors
-      }
-      reject(
-        new Error(
-          `Media storage upload timed out for ${file.name}. Check Firebase Storage configuration or upload via the server.`
-        )
-      );
-    }, timeoutMs);
+      cleanup();
+      reject(err);
+    };
 
-    const cleanup = () => window.clearTimeout(timeoutTimer);
+    const handleAbort = () => {
+      try {
+        task?.cancel();
+      } catch {
+        // ignore
+      }
+      failWith(
+        new MediaUploadError(`Upload cancelled for ${file.name}.`, {
+          code: 'ABORTED',
+          isPermanent: true,
+          stage: 'cancelled',
+        })
+      );
+    };
+
+    signal?.addEventListener('abort', handleAbort, { once: true });
+
+    try {
+      task = uploadBytesResumable(storageRef, file, metadata);
+    } catch (initErr) {
+      failWith(classifyFirebaseStorageError(initErr, file.name));
+      return;
+    }
+
+    const activeProgressStallMs = isVideo ? VIDEO_PROGRESS_STALL_MS : IMAGE_PROGRESS_STALL_MS;
+    stallTimer = window.setInterval(() => {
+      if (settled) return;
+      const idleMs = Date.now() - lastProgressAt;
+      const limitMs = lastBytes === 0 ? HANDSHAKE_STALL_MS : activeProgressStallMs;
+      if (idleMs > limitMs) {
+        try {
+          task?.cancel();
+        } catch {
+          // ignore
+        }
+        failWith(
+          new MediaUploadError(
+            lastBytes === 0
+              ? `Storage connection stalled before transfer started for ${file.name}. Check Storage bucket CORS/network and retry.`
+              : `Upload stalled for ${file.name} after transferring ${Math.round(lastBytes / 1024)} KB.`,
+            {
+              code: 'NETWORK_STALL',
+              isPermanent: typeof navigator !== 'undefined' && navigator.onLine === false,
+              stage: 'uploading',
+            }
+          )
+        );
+      }
+    }, 2_000);
 
     task.on(
       'state_changed',
       (snapshot) => {
         if (settled) return;
-        if (snapshot.totalBytes > 0 && onProgress) {
+        if (snapshot.bytesTransferred > lastBytes) {
+          lastBytes = snapshot.bytesTransferred;
+          lastProgressAt = Date.now();
+        }
+        if (snapshot.totalBytes > 0) {
           const pct = Math.min(
             98,
             Math.max(1, Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100))
           );
-          onProgress(pct);
+          onProgress?.(pct);
+          if (pct >= lastLoggedPct + 25 || pct === 98) {
+            lastLoggedPct = pct;
+            logUploadStage('Progress', {
+              provider: 'firebase-storage',
+              objectPath,
+              pct,
+              bytesTransferred: snapshot.bytesTransferred,
+              totalBytes: snapshot.totalBytes,
+            });
+          }
         }
       },
       (error) => {
         if (settled) return;
-        settled = true;
-        cleanup();
-        const code = (error as { code?: string })?.code || '';
-        if (code === 'storage/unauthorized') {
-          reject(
-            new Error(
-              'Firebase Storage permission denied. Ensure Storage rules are configured or authenticate via the Admin Console.'
-            )
-          );
-          return;
-        }
-        if (code === 'storage/quota-exceeded') {
-          reject(new Error('Storage quota exceeded.'));
-          return;
-        }
-        reject(new Error(error.message || `Failed to upload ${file.name} to storage.`));
+        const classified = classifyFirebaseStorageError(error, file.name);
+        failWith(classified);
       },
       async () => {
-        if (settled) return;
+        if (settled || !task) return;
         try {
+          logUploadStage('Complete', {
+            provider: 'firebase-storage',
+            objectPath,
+            sizeBytes: file.size,
+          });
           const url = await getDownloadURL(task.snapshot.ref);
+          if (!isValidUploadedMediaUrl(url)) {
+            throw new MediaUploadError(
+              `Invalid download URL returned by Firebase Storage for ${file.name}.`,
+              { code: 'INVALID_DOWNLOAD_URL', isPermanent: true, stage: 'verifying' }
+            );
+          }
           settled = true;
           cleanup();
           onProgress?.(100);
+          logUploadStage('DownloadURL', {
+            provider: 'firebase-storage',
+            objectPath,
+            url,
+          });
           resolve(url);
         } catch (err) {
-          settled = true;
-          cleanup();
-          reject(
-            err instanceof Error
-              ? err
-              : new Error(`Failed to resolve download URL for ${file.name}.`)
-          );
+          failWith(classifyFirebaseStorageError(err, file.name));
         }
       }
     );
   });
 }
 
+async function uploadViaFirebaseStorageWithRetry(
+  file: File,
+  folder: MediaFolder,
+  mimeType: string,
+  isVideo: boolean,
+  onProgress?: (pct: number) => void,
+  signal?: AbortSignal,
+  onStageChange?: (stage: MediaUploadStage) => void
+): Promise<string> {
+  // Use Firebase Storage SDK's short native retry window so our intelligent
+  // transient-vs-permanent classifier remains in full control.
+  storage.maxUploadRetryTime = 10_000;
+  storage.maxOperationRetryTime = 10_000;
+
+  let lastError: MediaUploadError | null = null;
+
+  for (let attempt = 0; attempt <= MAX_TRANSIENT_RETRIES; attempt += 1) {
+    if (signal?.aborted) {
+      throw new MediaUploadError(`Upload cancelled for ${file.name}.`, {
+        code: 'ABORTED',
+        isPermanent: true,
+        stage: 'cancelled',
+      });
+    }
+
+    if (attempt > 0) {
+      onStageChange?.('retrying');
+      const backoffMs = Math.min(4_000, 1_000 * Math.pow(2, attempt - 1));
+      logUploadStage('Retry', {
+        provider: 'firebase-storage',
+        name: file.name,
+        attempt,
+        backoffMs,
+        previousCode: lastError?.code,
+      });
+      await new Promise<void>((resolve, reject) => {
+        const timer = window.setTimeout(() => {
+          signal?.removeEventListener('abort', onAbort);
+          resolve();
+        }, backoffMs);
+        const onAbort = () => {
+          window.clearTimeout(timer);
+          reject(
+            new MediaUploadError(`Upload cancelled for ${file.name}.`, {
+              code: 'ABORTED',
+              isPermanent: true,
+              stage: 'cancelled',
+            })
+          );
+        };
+        signal?.addEventListener('abort', onAbort, { once: true });
+      });
+    }
+
+    onStageChange?.('uploading');
+    try {
+      return await attemptSingleFirebaseStorageUpload(
+        file,
+        folder,
+        mimeType,
+        isVideo,
+        onProgress,
+        signal
+      );
+    } catch (err) {
+      const classified = classifyFirebaseStorageError(err, file.name);
+      lastError = classified;
+      if (classified.isPermanent || attempt >= MAX_TRANSIENT_RETRIES) {
+        logUploadStage('Error', {
+          provider: 'firebase-storage',
+          name: file.name,
+          code: classified.code,
+          isPermanent: classified.isPermanent,
+          message: classified.message,
+        });
+        throw classified;
+      }
+    }
+  }
+
+  throw (
+    lastError ||
+    new MediaUploadError(`Upload failed for ${file.name}.`, {
+      code: 'UPLOAD_FAILED',
+      isPermanent: false,
+      stage: 'error',
+    })
+  );
+}
+
+/**
+ * Full verified upload pipeline for product images, videos, categories, and hero banners:
+ * 1. Validates size, MIME, magic bytes, and browser decode integrity.
+ * 2. Prevents duplicate concurrent uploads via `activeUploadRegistry`.
+ * 3. Checks auth + connectivity + Firebase Storage bucket availability (`pythoxworld.firebasestorage.app`).
+ * 4. Uploads to Firebase Storage (`uploadBytes` / `uploadBytesResumable`) -> verifies `getDownloadURL`,
+ *    or falls back safely to verified Firestore `media_assets` for images (or Node backend for videos)
+ *    if the Firebase Storage bucket has not been enabled yet (HTTP 404).
+ */
 export async function uploadMediaToFirebase(
   file: File,
   folder: MediaFolder,
   onProgress?: (pct: number) => void,
-  sessionTokenOverride?: string
+  sessionTokenOverride?: string,
+  options?: MediaUploadOptions
 ): Promise<string> {
   const isVideo = folder === 'products/videos';
-  const extMatch = isVideo
-    ? /\.(mp4|webm|mov)$/i.test(file.name)
-    : /\.(jpg|jpeg|png|webp)$/i.test(file.name);
-  const mimeLower = file.type.toLowerCase();
-  const mimeAllowed = isVideo
-    ? ALLOWED_VIDEO_MIME.has(mimeLower)
-    : ALLOWED_IMAGE_MIME.has(mimeLower);
+  const kind: 'image' | 'video' = isVideo ? 'video' : 'image';
+  const uploadKey =
+    options?.uploadKey ||
+    `${folder}:${file.name}:${file.size}:${file.lastModified || 0}`;
 
-  if (!mimeAllowed && !extMatch) {
-    throw new Error(
-      isVideo
-        ? `${file.name}: unsupported video format. Allowed: MP4, WEBM, MOV.`
-        : `${file.name}: unsupported image format. Allowed: JPG, PNG, WEBP.`
-    );
+  const existingActive = activeUploadRegistry.get(uploadKey);
+  if (existingActive) {
+    logUploadStage('DuplicatePrevented', { uploadKey, name: file.name, folder });
+    return existingActive.promise;
   }
 
-  const maxBytes = isVideo ? MAX_VIDEO_BYTES : MAX_IMAGE_BYTES;
-  if (file.size <= 0) {
-    throw new Error(`${file.name}: file is empty.`);
-  }
-  if (file.size > maxBytes) {
-    throw new Error(
-      isVideo
-        ? `${file.name} exceeds the 50 MB video upload limit.`
-        : `${file.name} exceeds the 10 MB image upload limit.`
-    );
-  }
-
-  const token = sessionTokenOverride ?? inMemoryAdminSessionToken;
-  onProgress?.(2);
-
-  if (!isVideo && !isVerifiedAdminUser(auth.currentUser)) {
-    throw new Error(
-      'Google Admin sign-in (lord79915@gmail.com or pythoxfashion@gmail.com) is required to upload product images permanently to Cloud Storage.'
-    );
-  }
-
-  // Compress images client-side so every asset fits cleanly inside permanent Firestore media_assets storage
-  const preparedFile = isVideo
-    ? file
-    : await compressImageForDurableStorage(file);
-
-  const firebaseIdToken =
-    auth.currentUser && isVerifiedAdminUser(auth.currentUser)
-      ? await auth.currentUser.getIdToken(true).catch(() => '')
-      : '';
-
-  if (!isVideo && !firebaseIdToken) {
-    throw new Error(
-      'Google Admin authentication expired. Please re-connect Google Admin before uploading images.'
-    );
-  }
-
-  try {
-    const result = await uploadViaBackendXhr(
-      preparedFile,
-      isVideo ? 'video' : 'image',
-      token,
-      firebaseIdToken,
-      onProgress
-    );
-
-    if (!isVideo && (!result.persistent || result.url.startsWith('/uploads/'))) {
-      // Guarantee Firestore permanent media_assets copy even if backend skipped cloud write
-      return await uploadImageDirectToFirestoreMediaAssets(preparedFile, onProgress);
+  const internalAbort = new AbortController();
+  const externalSignal = options?.signal;
+  const forwardAbort = () => internalAbort.abort();
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      internalAbort.abort();
+    } else {
+      externalSignal.addEventListener('abort', forwardAbort, { once: true });
     }
+  }
 
-    return result.url;
-  } catch (err: unknown) {
-    const code = (err as { code?: string })?.code;
-    if (isVerifiedAdminUser(auth.currentUser)) {
-      if (!isVideo && preparedFile.size <= DURABLE_IMAGE_MAX_HARD_BYTES) {
-        return uploadImageDirectToFirestoreMediaAssets(preparedFile, onProgress);
+  const runPipeline = async (): Promise<string> => {
+    const signal = internalAbort.signal;
+
+    try {
+      if (signal.aborted) {
+        throw new MediaUploadError(`Upload cancelled for ${file.name}.`, {
+          code: 'ABORTED',
+          isPermanent: true,
+          stage: 'cancelled',
+        });
       }
-      if (code === 'BACKEND_UNAVAILABLE') {
-        return uploadViaFirebaseStorage(preparedFile, folder, isVideo, onProgress);
+
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+        throw new MediaUploadError(
+          `You appear to be offline. Reconnect to the internet before uploading ${file.name}.`,
+          { code: 'OFFLINE', isPermanent: true, stage: 'error' }
+        );
       }
+
+      // Stage 1: Validate file format, magic bytes, size, and decodability
+      options?.onStageChange?.('validating');
+      const validated = await validateMediaFile(file, kind);
+
+      if (signal.aborted) {
+        throw new MediaUploadError(`Upload cancelled for ${file.name}.`, {
+          code: 'ABORTED',
+          isPermanent: true,
+          stage: 'cancelled',
+        });
+      }
+
+      // Stage 2: Verify Admin Authentication & refresh ID token
+      if (!isVerifiedAdminUser(auth.currentUser)) {
+        throw new MediaUploadError(
+          'Google Admin sign-in (lord79915@gmail.com or pythoxfashion@gmail.com) is required to upload product media permanently.',
+          { code: 'storage/unauthenticated', isPermanent: true, stage: 'error' }
+        );
+      }
+
+      let firebaseIdToken = '';
+      try {
+        firebaseIdToken = await auth.currentUser!.getIdToken(true);
+      } catch {
+        firebaseIdToken = '';
+      }
+      if (!firebaseIdToken) {
+        throw new MediaUploadError(
+          'Google Admin session expired. Please re-authenticate with Google Admin and try again.',
+          { code: 'storage/unauthenticated', isPermanent: true, stage: 'error' }
+        );
+      }
+
+      const sessionToken = sessionTokenOverride ?? inMemoryAdminSessionToken;
+      onProgress?.(2);
+      options?.onStageChange?.('preparing');
+
+      // Stage 3: Probe Firebase Storage bucket availability cleanly
+      const bucketProbe = await checkFirebaseStorageBucketStatus();
+      logUploadStage('Start', {
+        name: file.name,
+        folder,
+        kind,
+        sizeBytes: file.size,
+        storageBucket: STORAGE_BUCKET,
+        bucketAvailable: bucketProbe.available,
+        bucketProbeReason: bucketProbe.reason || 'ok',
+      });
+
+      // Path A: Firebase Storage bucket IS provisioned and healthy -> use real Firebase Storage!
+      if (bucketProbe.available) {
+        let storageFile = file;
+        let storageMime: string = validated.detectedMime;
+        if (!isVideo) {
+          const optimized = await optimizeImageForStorageBucket(
+            file,
+            validated.detectedMime as 'image/jpeg' | 'image/png' | 'image/webp'
+          );
+          storageFile = optimized.file;
+          storageMime = optimized.mimeType;
+        }
+
+        try {
+          const downloadUrl = await uploadViaFirebaseStorageWithRetry(
+            storageFile,
+            folder,
+            storageMime,
+            isVideo,
+            onProgress,
+            signal,
+            options?.onStageChange
+          );
+          options?.onStageChange?.('complete');
+          return downloadUrl;
+        } catch (storageErr) {
+          const classified = classifyFirebaseStorageError(storageErr, file.name);
+          // For images, allow durable Firestore fallback ONLY if Storage network/CORS blocked unexpectedly (never silently swallow auth/validation failures)
+          const canFallbackImage =
+            !isVideo &&
+            classified.code !== 'storage/unauthorized' &&
+            classified.code !== 'storage/unauthenticated' &&
+            classified.code !== 'storage/canceled' &&
+            classified.code !== 'ABORTED';
+          if (!canFallbackImage) {
+            throw classified;
+          }
+          logUploadStage('Retry', {
+            name: file.name,
+            reason: `Firebase Storage unavailable (${classified.code}); using verified durable image store.`,
+          });
+        }
+      }
+
+      // Path B: Firebase Storage bucket not yet enabled (HTTP 404) or CORS-blocked
+      if (!isVideo) {
+        const compressedImage = await compressImageForDurableStorage(file);
+        const compressedMime = normalizeDurableMime(
+          compressedImage.type || validated.detectedMime,
+          compressedImage.name
+        );
+
+        options?.onStageChange?.('uploading');
+        try {
+          const result = await uploadViaBackendXhr(
+            compressedImage,
+            'image',
+            compressedMime,
+            sessionToken,
+            firebaseIdToken,
+            onProgress,
+            signal
+          );
+
+          if (result.persistent && isValidUploadedMediaUrl(result.url) && !result.url.startsWith('/uploads/')) {
+            options?.onStageChange?.('complete');
+            logUploadStage('DownloadURL', {
+              provider: 'backend-firestore-media-assets',
+              name: file.name,
+              url: result.url,
+            });
+            return result.url;
+          }
+        } catch (backendErr) {
+          if (backendErr instanceof MediaUploadError) {
+            if (
+              backendErr.code === 'ABORTED' ||
+              backendErr.code === 'UNAUTHORIZED'
+            ) {
+              throw backendErr;
+            }
+          }
+        }
+
+        options?.onStageChange?.('verifying');
+        const directUrl = await uploadImageDirectToFirestoreMediaAssets(
+          compressedImage,
+          onProgress,
+          signal
+        );
+        options?.onStageChange?.('complete');
+        return directUrl;
+      }
+
+      // Video path when Firebase Storage bucket returns 404 ("The specified bucket does not exist")
+      options?.onStageChange?.('uploading');
+      try {
+        const videoResult = await uploadViaBackendXhr(
+          file,
+          'video',
+          validated.detectedMime,
+          sessionToken,
+          firebaseIdToken,
+          onProgress,
+          signal
+        );
+        if (isValidUploadedMediaUrl(videoResult.url)) {
+          options?.onStageChange?.('complete');
+          logUploadStage('DownloadURL', {
+            provider: 'express-uploads',
+            name: file.name,
+            url: videoResult.url,
+            persistent: videoResult.persistent,
+          });
+          return videoResult.url;
+        }
+      } catch (backendErr) {
+        if (
+          backendErr instanceof MediaUploadError &&
+          backendErr.code !== 'BACKEND_UNAVAILABLE'
+        ) {
+          throw backendErr;
+        }
+      }
+
+      const bucketMessage =
+        bucketProbe.reason === 'bucket-not-found'
+          ? `Firebase Storage bucket "${STORAGE_BUCKET}" is not activated yet on project "pythoxworld" (HTTP 404). Open Firebase Console -> Storage -> Get Started to activate your Storage bucket, publish storage.rules, and retry.`
+          : bucketProbe.reason === 'offline'
+            ? `Cannot upload video ${file.name} while offline.`
+            : `Firebase Storage bucket "${STORAGE_BUCKET}" is unreachable from this origin (${bucketProbe.reason || 'CORS/network'}). Verify Firebase Storage CORS settings and try again.`;
+
+      throw new MediaUploadError(bucketMessage, {
+        code:
+          bucketProbe.reason === 'bucket-not-found'
+            ? 'storage/bucket-not-found'
+            : 'STORAGE_UNAVAILABLE',
+        isPermanent: true,
+        stage: 'error',
+      });
+    } catch (err) {
+      const normalizedErr =
+        err instanceof MediaUploadError
+          ? err
+          : classifyFirebaseStorageError(err, file.name);
+      if (normalizedErr.stage === 'cancelled') {
+        options?.onStageChange?.('cancelled');
+        logUploadStage('Cancelled', { name: file.name, uploadKey });
+      } else {
+        options?.onStageChange?.('error');
+        logUploadStage('Error', {
+          name: file.name,
+          uploadKey,
+          code: normalizedErr.code,
+          isPermanent: normalizedErr.isPermanent,
+          message: normalizedErr.message,
+        });
+      }
+      throw normalizedErr;
+    } finally {
+      externalSignal?.removeEventListener('abort', forwardAbort);
+      activeUploadRegistry.delete(uploadKey);
     }
-    if (code === 'BACKEND_UNAVAILABLE') {
-      throw new Error(
-        'Upload server endpoint is unavailable. Please sign in with Google Admin or ensure the backend server is running.'
-      );
-    }
-    throw err instanceof Error ? err : new Error(`Upload failed for ${file.name}.`);
-  }
+  };
+
+  const promise = runPipeline();
+  activeUploadRegistry.set(uploadKey, {
+    cancel: () => internalAbort.abort(),
+    promise,
+  });
+
+  return promise;
 }

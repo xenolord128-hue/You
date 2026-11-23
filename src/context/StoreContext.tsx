@@ -1461,7 +1461,16 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       );
       if (cleanProduct.images.length === 0 || hasInvalidImageUrl) {
         throw new Error(
-          'All product images must be stored permanently in Cloud Storage before saving. Please re-upload your image(s).'
+          'All product images must have valid permanent cloud URLs before saving. Please re-upload your image(s).'
+        );
+      }
+      if (
+        cleanProduct.videoUrl &&
+        (cleanProduct.videoUrl.startsWith('blob:') ||
+          cleanProduct.videoUrl.startsWith('data:'))
+      ) {
+        throw new Error(
+          'Product video upload did not finish with a valid storage URL. Please retry the video upload.'
         );
       }
 
@@ -1482,6 +1491,15 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       } catch {
         // Proceed if document does not exist yet
       }
+
+      console.info('[Product:FirestoreSave]', {
+        ts: new Date().toISOString(),
+        productId: cleanProduct.id,
+        sku: cleanProduct.sku,
+        status: cleanProduct.status,
+        imageCount: cleanProduct.images.length,
+        hasVideo: Boolean(cleanProduct.videoUrl),
+      });
 
       const apiRes = await adminApiCall<{
         ok?: boolean;
@@ -1507,7 +1525,25 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
             'Product save could not be verified on Cloud Firestore. Please retry.'
           );
         }
+        if (verified.status !== cleanProduct.status) {
+          throw new Error(
+            `Product publish status verification failed (expected "${cleanProduct.status}", got "${verified.status}"). Please retry.`
+          );
+        }
+        if (!Array.isArray(verified.images) || verified.images.length === 0) {
+          throw new Error(
+            'Saved Firestore product is missing image URLs. Please retry saving.'
+          );
+        }
         cleanProduct = normalizeProductMedia(clampProductForFirestore(verified));
+        console.info('[Product:PublishConfirm]', {
+          ts: new Date().toISOString(),
+          productId: cleanProduct.id,
+          sku: cleanProduct.sku,
+          status: cleanProduct.status,
+          imageCount: cleanProduct.images.length,
+          hasVideo: Boolean(cleanProduct.videoUrl),
+        });
       } catch (err) {
         handleFirestoreError(err, OperationType.WRITE, `products/${cleanProduct.id}`);
       }

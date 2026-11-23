@@ -20,6 +20,7 @@ import {
   X,
 } from 'lucide-react';
 import { useStore } from '../context/StoreContext';
+import { handleCloudMediaImageError } from '../lib/cloudMediaFallback';
 import {
   calculateDiscountPercent,
   formatBDT,
@@ -384,6 +385,12 @@ export const ProductDetailPage: React.FC = () => {
                 src={galleryImages[activeImageIdx] || product.primaryImage || product.images[0]}
                 alt={`${product.name} view ${activeImageIdx + 1}`}
                 referrerPolicy="no-referrer"
+                onError={(e) =>
+                  handleCloudMediaImageError(
+                    e.currentTarget,
+                    galleryImages[activeImageIdx] || product.primaryImage || product.images[0]
+                  )
+                }
                 onClick={() => setZoomed((z) => !z)}
                 className={`h-full w-full object-cover transition-transform duration-300 cursor-zoom-in ${
                   zoomed ? 'scale-125 cursor-zoom-out' : 'scale-100'

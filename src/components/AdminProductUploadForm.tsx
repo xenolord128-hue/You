@@ -22,9 +22,16 @@ import {
   ProductColor,
   ProductStatus,
 } from '../types/ecommerce';
-import { uploadMediaToFirebase } from '../services/mediaService';
+import {
+  cancelActiveMediaUpload,
+  cancelAllActiveMediaUploads,
+  isValidUploadedMediaUrl,
+  uploadMediaToFirebase,
+  validateMediaFile,
+} from '../services/mediaService';
 import { DEFAULT_CATEGORIES } from '../config/storeConfig';
 import { findCategoryByIdentifier, getSortedCategories } from '../lib/categoryUtils';
+import { handleCloudMediaImageError } from '../lib/cloudMediaFallback';
 import { useStore } from '../context/StoreContext';
 import { apiUrl } from '../lib/api';
 import { auth, isVerifiedAdminUser } from '../lib/firebase';
@@ -211,6 +218,8 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
   const videoInputRef = useRef<HTMLInputElement | null>(null);
   const imagesRef = useRef<MediaImageEntry[]>([]);
   const videoRef = useRef<MediaVideoEntry | null>(null);
+  const uploadAbortRef = useRef<AbortController | null>(null);
+  const mountedRef = useRef(true);
 
   useEffect(() => {
     imagesRef.current = images;
@@ -220,9 +229,13 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
     videoRef.current = video;
   }, [video]);
 
-  // Revoke any remaining blob URLs on unmount
+  // Revoke any remaining blob URLs and cancel active uploads on unmount
   useEffect(() => {
+    mountedRef.current = true;
     return () => {
+      mountedRef.current = false;
+      uploadAbortRef.current?.abort();
+      cancelAllActiveMediaUploads();
       imagesRef.current.forEach((img) => {
         if (img.objectUrl) URL.revokeObjectURL(img.objectUrl);
       });
@@ -233,6 +246,8 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
   }, []);
 
   const clearForm = (preserveSuccessBanner = false) => {
+    uploadAbortRef.current?.abort();
+    cancelAllActiveMediaUploads();
     imagesRef.current.forEach((img) => {
       if (img.objectUrl) URL.revokeObjectURL(img.objectUrl);
     });
@@ -529,10 +544,32 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
         }
         return next;
       });
+
+      // Async magic-byte + decode check immediately on selection to flag corrupted files early
+      accepted.forEach((entry) => {
+        if (!entry.file) return;
+        void validateMediaFile(entry.file, 'image').catch((err: unknown) => {
+          if (!mountedRef.current) return;
+          const msg =
+            err instanceof Error
+              ? err.message
+              : `${entry.name} appears corrupted or unsupported.`;
+          setImages((prev) =>
+            prev.map((img) =>
+              img.id === entry.id ? { ...img, status: 'error', error: msg } : img
+            )
+          );
+          setErrors((prev) => ({
+            ...prev,
+            images: prev.images ? `${prev.images} ${msg}` : msg,
+          }));
+        });
+      });
     }
   };
 
   const removeImage = (id: string) => {
+    cancelActiveMediaUpload(id);
     setImages((prev) => {
       const target = prev.find((i) => i.id === id);
       if (target?.objectUrl) URL.revokeObjectURL(target.objectUrl);
@@ -542,6 +579,77 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
       }
       return next;
     });
+  };
+
+  const retrySingleImage = async (id: string) => {
+    if (isSubmitting) return;
+    const target = imagesRef.current.find((i) => i.id === id);
+    if (!target || !target.file || target.status === 'uploading') return;
+
+    if (!isFirebaseAdminLinked || !isVerifiedAdminUser(auth.currentUser)) {
+      const msg =
+        'Google Admin sign-in (lord79915@gmail.com or pythoxfashion@gmail.com) is required before uploading.';
+      setErrors((prev) => ({ ...prev, submit: msg }));
+      showToast(msg);
+      return;
+    }
+
+    const controller = new AbortController();
+    uploadAbortRef.current = controller;
+
+    setErrors((prev) => ({ ...prev, images: undefined, submit: undefined }));
+    setImages((prev) =>
+      prev.map((img) =>
+        img.id === id ? { ...img, status: 'uploading', progress: 2, error: undefined } : img
+      )
+    );
+
+    try {
+      const uploadedUrl = await uploadMediaToFirebase(
+        target.file,
+        'products/images',
+        (pct) => {
+          if (!mountedRef.current) return;
+          setImages((prev) =>
+            prev.map((img) => (img.id === id ? { ...img, progress: pct } : img))
+          );
+        },
+        adminSessionToken,
+        { uploadKey: id, signal: controller.signal }
+      );
+      if (!isValidUploadedMediaUrl(uploadedUrl)) {
+        throw new Error(`Invalid storage URL returned for ${target.name}.`);
+      }
+      if (target.objectUrl) URL.revokeObjectURL(target.objectUrl);
+      if (!mountedRef.current) return;
+      setImages((prev) =>
+        prev.map((img) =>
+          img.id === id
+            ? {
+                ...img,
+                url: uploadedUrl,
+                file: undefined,
+                objectUrl: undefined,
+                status: 'uploaded',
+                progress: 100,
+                error: undefined,
+              }
+            : img
+        )
+      );
+      showToast(`${target.name} uploaded successfully`);
+    } catch (err: unknown) {
+      if (!mountedRef.current) return;
+      const msg =
+        err instanceof Error ? err.message : `Failed to upload ${target.name}.`;
+      setImages((prev) =>
+        prev.map((img) =>
+          img.id === id ? { ...img, status: 'error', progress: 0, error: msg } : img
+        )
+      );
+      setErrors((prev) => ({ ...prev, submit: msg }));
+      showToast(msg);
+    }
   };
 
   const setAsPrimaryImage = (id: string) => {
@@ -580,6 +688,7 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
   // --- VIDEO HANDLERS ---
   const handleSelectVideoFile = (file: File | undefined) => {
     if (!file) return;
+    cancelActiveMediaUpload('product-video-upload');
     const validType =
       ALLOWED_VIDEO_MIME.has(file.type.toLowerCase()) ||
       ALLOWED_VIDEO_EXT.test(file.name);
@@ -618,9 +727,79 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
       status: 'pending',
       progress: 0,
     });
+
+    void validateMediaFile(file, 'video').catch((err: unknown) => {
+      if (!mountedRef.current) return;
+      const msg =
+        err instanceof Error
+          ? err.message
+          : `${file.name} appears corrupted or unplayable.`;
+      setVideo((prev) =>
+        prev && prev.name === file.name ? { ...prev, status: 'error', error: msg } : prev
+      );
+      setErrors((prev) => ({ ...prev, video: msg }));
+    });
+  };
+
+  const retryVideoUpload = async () => {
+    if (isSubmitting) return;
+    const currentVideo = videoRef.current;
+    if (!currentVideo || !currentVideo.file || currentVideo.status === 'uploading') return;
+
+    if (!isFirebaseAdminLinked || !isVerifiedAdminUser(auth.currentUser)) {
+      const msg =
+        'Google Admin sign-in (lord79915@gmail.com or pythoxfashion@gmail.com) is required before uploading.';
+      setErrors((prev) => ({ ...prev, submit: msg }));
+      showToast(msg);
+      return;
+    }
+
+    const controller = new AbortController();
+    uploadAbortRef.current = controller;
+
+    setErrors((prev) => ({ ...prev, video: undefined, submit: undefined }));
+    setVideo((prev) =>
+      prev ? { ...prev, status: 'uploading', progress: 2, error: undefined } : prev
+    );
+
+    try {
+      const uploadedVideoUrl = await uploadMediaToFirebase(
+        currentVideo.file,
+        'products/videos',
+        (pct) => {
+          if (!mountedRef.current) return;
+          setVideo((prev) => (prev ? { ...prev, progress: pct } : prev));
+        },
+        adminSessionToken,
+        { uploadKey: 'product-video-upload', signal: controller.signal }
+      );
+      if (!isValidUploadedMediaUrl(uploadedVideoUrl)) {
+        throw new Error(`Invalid video download URL returned for ${currentVideo.name}.`);
+      }
+      if (currentVideo.objectUrl) URL.revokeObjectURL(currentVideo.objectUrl);
+      if (!mountedRef.current) return;
+      setVideo({
+        url: uploadedVideoUrl,
+        name: currentVideo.name,
+        sizeBytes: currentVideo.sizeBytes,
+        status: 'uploaded',
+        progress: 100,
+      });
+      showToast('Product video uploaded successfully');
+    } catch (err: unknown) {
+      if (!mountedRef.current) return;
+      const msg =
+        err instanceof Error ? err.message : `Failed to upload ${currentVideo.name}.`;
+      setVideo((prev) =>
+        prev ? { ...prev, status: 'error', progress: 0, error: msg } : prev
+      );
+      setErrors((prev) => ({ ...prev, submit: msg }));
+      showToast(msg);
+    }
   };
 
   const handleRemoveVideo = () => {
+    cancelActiveMediaUpload('product-video-upload');
     if (video?.objectUrl) URL.revokeObjectURL(video.objectUrl);
     setVideo(null);
     setErrors((prev) => ({ ...prev, video: undefined }));
@@ -748,12 +927,15 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
       return;
     }
 
+    const batchAbortController = new AbortController();
+    uploadAbortRef.current = batchAbortController;
+
     setErrors({});
     setIsSubmitting(true);
     setSubmitProgress(5);
 
     try {
-      // 1. Upload any pending local image files sequentially with progress tracking
+      // 1. Upload any pending/failed local image files sequentially with progress tracking
       const currentImages = [...images];
       const pendingImageCount = currentImages.filter((i) => i.file && i.status !== 'uploaded').length;
       const hasPendingVideo = Boolean(video?.file && video.status !== 'uploaded');
@@ -765,6 +947,11 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
       for (let idx = 0; idx < currentImages.length; idx += 1) {
         const item = currentImages[idx];
         if (!item.file || item.status === 'uploaded') {
+          if (!isValidUploadedMediaUrl(item.url)) {
+            throw new Error(
+              `Image "${item.name}" has an invalid URL. Remove it or select the file again.`
+            );
+          }
           uploadedImages.push(item);
           continue;
         }
@@ -785,6 +972,7 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
             item.file,
             'products/images',
             (pct) => {
+              if (!mountedRef.current) return;
               setImages((prev) =>
                 prev.map((img) =>
                   img.id === item.id ? { ...img, progress: pct } : img
@@ -795,8 +983,15 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
               );
               setSubmitProgress(overall);
             },
-            adminSessionToken
+            adminSessionToken,
+            { uploadKey: item.id, signal: batchAbortController.signal }
           );
+
+          if (!isValidUploadedMediaUrl(uploadedUrl)) {
+            throw new Error(
+              `Invalid download URL returned for ${item.name}. Please retry the upload.`
+            );
+          }
 
           if (item.objectUrl) URL.revokeObjectURL(item.objectUrl);
           const finalized: MediaImageEntry = {
@@ -818,14 +1013,16 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
             err instanceof Error ? err.message : `Failed to upload ${item.name}.`;
           setImages((prev) =>
             prev.map((img) =>
-              img.id === item.id ? { ...img, status: 'error', error: message } : img
+              img.id === item.id
+                ? { ...img, status: 'error', progress: 0, error: message }
+                : img
             )
           );
           throw new Error(message);
         }
       }
 
-      // 2. Upload pending product video (if provided)
+      // 2. Upload pending/failed product video (if provided)
       let finalVideoUrl: string | undefined = video?.url || undefined;
       if (video?.file && video.status !== 'uploaded') {
         const videoFile = video.file;
@@ -839,14 +1036,22 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
             videoFile,
             'products/videos',
             (pct) => {
+              if (!mountedRef.current) return;
               setVideo((prev) => (prev ? { ...prev, progress: pct } : prev));
               const overall = Math.round(
                 ((completedSteps + pct / 100) / totalSteps) * 90 + 5
               );
               setSubmitProgress(overall);
             },
-            adminSessionToken
+            adminSessionToken,
+            { uploadKey: 'product-video-upload', signal: batchAbortController.signal }
           );
+
+          if (!isValidUploadedMediaUrl(uploadedVideoUrl)) {
+            throw new Error(
+              `Invalid video URL returned for ${videoFile.name}. Please retry the upload.`
+            );
+          }
 
           if (video.objectUrl) URL.revokeObjectURL(video.objectUrl);
           finalVideoUrl = uploadedVideoUrl;
@@ -862,19 +1067,23 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
           const message =
             err instanceof Error ? err.message : 'Failed to upload product video.';
           setVideo((prev) =>
-            prev ? { ...prev, status: 'error', error: message } : prev
+            prev ? { ...prev, status: 'error', progress: 0, error: message } : prev
           );
           throw new Error(message);
         }
+      } else if (finalVideoUrl && !isValidUploadedMediaUrl(finalVideoUrl)) {
+        throw new Error(
+          'Product video upload did not complete with a valid storage URL. Please retry or remove the video.'
+        );
       }
 
-      // 3. Construct ordered images + primaryImage and save full product
+      // 3. Verify all final image/video URLs before creating Firestore product document
       const validUrls = uploadedImages
         .map((img) => img.url.trim())
-        .filter((url) => Boolean(url) && !url.startsWith('blob:'));
+        .filter((url) => isValidUploadedMediaUrl(url));
 
-      if (validUrls.length === 0) {
-        throw new Error('No uploaded product images were found. Please retry.');
+      if (validUrls.length !== uploadedImages.length || validUrls.length === 0) {
+        throw new Error('Some product images do not have valid storage URLs yet. Please retry.');
       }
 
       const primaryEntry =
@@ -885,7 +1094,7 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
         ...validUrls.filter((u) => u !== primaryImage),
       ];
 
-      setSubmitStatusText('Saving product details to store...');
+      setSubmitStatusText('Saving product details to Firestore...');
       setSubmitProgress(96);
 
       const numericRegular = Number(price) || 0;
@@ -1532,6 +1741,7 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
                       <img
                         src={img.url}
                         alt={`Image ${idx + 1}: ${img.name}`}
+                        onError={(e) => handleCloudMediaImageError(e.currentTarget, img.url)}
                         className="w-full h-full object-cover"
                       />
 
@@ -1586,9 +1796,21 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
                       </div>
 
                       {img.error && (
-                        <span className="text-[11px] text-[#B91C1C] leading-snug">
-                          {img.error}
-                        </span>
+                        <div className="flex flex-col gap-1">
+                          <span className="text-[11px] text-[#B91C1C] leading-snug">
+                            {img.error}
+                          </span>
+                          {img.file && (
+                            <button
+                              type="button"
+                              disabled={isSubmitting}
+                              onClick={() => void retrySingleImage(img.id)}
+                              className="self-start inline-flex items-center gap-1 text-[11px] font-semibold text-[#0A0A0A] underline underline-offset-2 hover:opacity-75 cursor-pointer"
+                            >
+                              <RefreshCw className="h-3 w-3" /> Retry Upload
+                            </button>
+                          )}
+                        </div>
                       )}
 
                       <div className="flex items-center justify-between gap-1">
@@ -1729,6 +1951,8 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
                         ? 'Uploaded'
                         : video.status === 'uploading'
                         ? `Uploading ${video.progress}%`
+                        : video.status === 'error'
+                        ? 'Upload failed'
                         : 'Pending upload'}
                     </span>
                   </div>
@@ -1751,6 +1975,16 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
                   )}
 
                   <div className="flex flex-wrap gap-2">
+                    {video.status === 'error' && video.file && (
+                      <button
+                        type="button"
+                        disabled={isSubmitting}
+                        onClick={() => void retryVideoUpload()}
+                        className="admin-btn admin-btn-dark admin-btn-sm"
+                      >
+                        <RefreshCw className="h-3.5 w-3.5" /> Retry Upload
+                      </button>
+                    )}
                     <button
                       type="button"
                       disabled={isSubmitting}

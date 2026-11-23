@@ -23,6 +23,7 @@ import {
   MOBILE_HERO_CAMPAIGN_URL,
 } from '../config/storeConfig';
 import { formatBDT, sanitizeExternalHref, sanitizeMediaUrl } from '../lib/formatters';
+import { handleCloudMediaImageError } from '../lib/cloudMediaFallback';
 import { trackPixelEvent } from '../lib/metaPixel';
 
 interface EditorialCategoryTile {
@@ -107,35 +108,29 @@ export const HomePage: React.FC = () => {
     'Hello PYTHOX WORLD, I would like to explore the latest menswear drop.'
   )}`;
 
-  const [isMobileViewport, setIsMobileViewport] = useState<boolean>(() =>
-    typeof window !== 'undefined' ? window.matchMedia('(max-width: 767px)').matches : false
-  );
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const mq = window.matchMedia('(max-width: 767px)');
-    const onChange = (e: MediaQueryListEvent) => setIsMobileViewport(e.matches);
-    setIsMobileViewport(mq.matches);
-    mq.addEventListener('change', onChange);
-    return () => mq.removeEventListener('change', onChange);
-  }, []);
-
   const rawConfiguredHero = sanitizeMediaUrl(
     settings.heroImageUrl,
     HERO_CAMPAIGN_URL
   );
   const resolvedPrimaryHero =
-    rawConfiguredHero.includes('i.ibb.co.com/JwC1M9WR/')
+    rawConfiguredHero.includes('i.ibb.co.com/JwC1M9WR/') ||
+    rawConfiguredHero.includes('<img') ||
+    rawConfiguredHero.includes('%3Cimg')
       ? HERO_CAMPAIGN_URL
       : rawConfiguredHero;
   const [heroUseFallback, setHeroUseFallback] = useState(false);
   const heroImgSrc = heroUseFallback ? HERO_CAMPAIGN_FALLBACK_URL : resolvedPrimaryHero;
 
   const [mobileHeroUseFallback, setMobileHeroUseFallback] = useState(false);
-  const resolvedPrimaryMobileHero = sanitizeMediaUrl(
+  const rawConfiguredMobileHero = sanitizeMediaUrl(
     settings.mobileHeroImageUrl,
     MOBILE_HERO_CAMPAIGN_URL
   );
+  const resolvedPrimaryMobileHero =
+    rawConfiguredMobileHero.includes('<img') ||
+    rawConfiguredMobileHero.includes('%3Cimg')
+      ? MOBILE_HERO_CAMPAIGN_URL
+      : rawConfiguredMobileHero;
   const mobileHeroImgSrc = mobileHeroUseFallback
     ? MOBILE_HERO_CAMPAIGN_FALLBACK_URL
     : resolvedPrimaryMobileHero;
@@ -151,19 +146,22 @@ export const HomePage: React.FC = () => {
   }, [resolvedPrimaryMobileHero]);
 
   const handleHeroImgError = () => {
+    const isMobile =
+      typeof window !== 'undefined' &&
+      window.matchMedia('(max-width: 767px)').matches;
+    if (isMobile) {
+      if (!mobileHeroUseFallback && mobileHeroImgSrc !== MOBILE_HERO_CAMPAIGN_FALLBACK_URL) {
+        setMobileHeroUseFallback(true);
+        return;
+      }
+      markBroken('hero');
+      return;
+    }
     if (!heroUseFallback && heroImgSrc !== HERO_CAMPAIGN_FALLBACK_URL) {
       setHeroUseFallback(true);
       return;
     }
     markBroken('hero');
-  };
-
-  const handleMobileHeroImgError = () => {
-    if (!mobileHeroUseFallback && mobileHeroImgSrc !== MOBILE_HERO_CAMPAIGN_FALLBACK_URL) {
-      setMobileHeroUseFallback(true);
-      return;
-    }
-    markBroken('mobileHero');
   };
 
   const markBroken = (id: string) => {
@@ -179,13 +177,16 @@ export const HomePage: React.FC = () => {
 
       {/* ================= 1. CINEMATIC CAMPAIGN HERO ================= */}
       <section className="relative w-full bg-[#060814] text-white overflow-hidden">
-        {!isMobileViewport ? (
-          /* Desktop & Tablet Wide Cinematic 16:9 Composition (Existing Desktop Hero Image Preserved) */
-          <div className="flex relative mx-auto max-w-[1600px] aspect-[16/9] min-h-[540px] max-h-[780px] w-full items-center pt-16 bg-[#0B0B0B]">
-            <div className="absolute inset-0 z-[1]">
-              {!brokenImg.hero ? (
+        <div className="relative mx-auto max-w-[1600px] w-full aspect-[3/4] md:aspect-[16/9] md:min-h-[432px] lg:min-h-[540px] md:max-h-[780px] flex items-center md:pt-16 bg-[#060814] md:bg-[#0B0B0B]">
+          {/* Single Responsive <picture> Layer: Mobile artwork (3:4) <= 767px, Desktop/Tablet artwork (16:9) >= 768px */}
+          <div className="absolute inset-0 z-[1]">
+            {!brokenImg.hero ? (
+              <picture className="block h-full w-full">
+                <source
+                  media="(max-width: 767px)"
+                  srcSet={mobileHeroImgSrc}
+                />
                 <img
-                  key={`desktop-${heroImgSrc}`}
                   src={heroImgSrc}
                   alt="PYTHOX WORLD Men's Streetwear Campaign"
                   loading="eager"
@@ -193,92 +194,76 @@ export const HomePage: React.FC = () => {
                   fetchPriority="high"
                   referrerPolicy="no-referrer"
                   onError={handleHeroImgError}
-                  className="h-full w-full object-cover object-[62%_20%]"
+                  className="h-full w-full object-cover object-[50%_35%] md:object-[62%_20%]"
                 />
-              ) : (
-                <div className="h-full w-full bg-[#121212]" />
-              )}
-
-              {/* Left Editorial Contrast Scrim for Text Legibility */}
-              <div
-                aria-hidden="true"
-                className="absolute inset-y-0 left-0 w-3/4 bg-gradient-to-r from-[#0A0A0A]/82 via-[#0A0A0A]/36 to-transparent pointer-events-none"
-              />
-            </div>
-
-            <div className="relative z-10 w-full max-w-[1400px] mx-auto px-8 lg:px-12 py-14 flex items-center justify-between gap-8">
-              <div className="max-w-[400px] space-y-5">
-                <p className="font-mono text-[11px] uppercase tracking-[0.24em] text-[#D4D4D3]">
-                  STREETWEAR / CULTURE / YOU
-                </p>
-
-                <h1 className="font-street font-bold uppercase text-white tracking-[-0.025em] leading-[0.95] text-[clamp(2.75rem,4.8vw,4.15rem)]">
-                  BUILT FOR
-                  <br />
-                  THE REAL
-                  <br />
-                  ONES.
-                </h1>
-
-                <p className="text-[14px] text-[#E4E4E2]/90 leading-[1.6] max-w-[340px]">
-                  More than clothing — it&apos;s a mindset. PYTHOX WORLD is for the
-                  dreamers, the doers, and the ones who stay solid.
-                </p>
-
-                <div className="pt-2">
-                  <Link
-                    to="/shop"
-                    className="btn-base btn-outline-light group gap-5"
-                  >
-                    <span>SHOP NOW</span>
-                    <ArrowRight className="h-4 w-4 transition-transform duration-200 group-hover:translate-x-1" />
-                  </Link>
-                </div>
-              </div>
-
-              <div className="flex flex-col items-end self-end text-right font-mono text-[10px] uppercase tracking-[0.2em] text-white/70 space-y-1.5">
-                <span>EST. 2024</span>
-                <span className="tabular-nums text-white/55">23.8583° N</span>
-                <div className="flex items-center gap-3">
-                  <span className="h-[1px] w-7 bg-white/40" />
-                  <span className="tabular-nums text-white/55">90.2667° E</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        ) : (
-          /* Dedicated Mobile Responsive Layout (4:5 aspect ratio with overlay inside, zero empty space below) */
-          <div className="relative w-full aspect-[4/5] overflow-hidden bg-[#060814]">
-            {!brokenImg.mobileHero ? (
-              <img
-                key={`mobile-${mobileHeroImgSrc}`}
-                src={mobileHeroImgSrc}
-                alt="PYTHOX WORLD Men's Streetwear Campaign"
-                loading="eager"
-                decoding="sync"
-                fetchPriority="high"
-                referrerPolicy="no-referrer"
-                onError={handleMobileHeroImgError}
-                className="h-full w-full object-cover object-[50%_40%]"
-              />
+              </picture>
             ) : (
               <div className="h-full w-full bg-[#0B0E24]" />
             )}
 
-            {/* Subtle top-left & header vignette for crisp text legibility */}
+            {/* Desktop/Tablet Left Editorial Contrast Scrim */}
             <div
               aria-hidden="true"
-              className="absolute inset-x-0 top-0 h-[52%] bg-gradient-to-b from-[#040611]/78 via-[#040611]/38 to-transparent pointer-events-none"
+              className="hidden md:block absolute inset-y-0 left-0 w-3/4 bg-gradient-to-r from-[#0A0A0A]/82 via-[#0A0A0A]/36 to-transparent pointer-events-none"
             />
 
-            {/* Subtle bottom floor scrim for SHOP NOW CTA */}
+            {/* Mobile Top Header & Copy Legibility Vignette */}
             <div
               aria-hidden="true"
-              className="absolute inset-x-0 bottom-0 h-[26%] bg-gradient-to-t from-[#040611]/88 via-[#040611]/40 to-transparent pointer-events-none"
+              className="md:hidden absolute inset-x-0 top-0 h-[52%] bg-gradient-to-b from-[#040611]/78 via-[#040611]/38 to-transparent pointer-events-none"
             />
 
-            {/* Upper-Left Overlaid Hero Copy in Empty Studio Space */}
-            <div className="absolute top-[82px] sm:top-[96px] left-3.5 sm:left-6 z-10 w-[50%] sm:w-[49%] max-w-[205px] sm:max-w-[260px] space-y-1 sm:space-y-1.5">
+            {/* Mobile Bottom Floor Scrim for SHOP NOW CTA */}
+            <div
+              aria-hidden="true"
+              className="md:hidden absolute inset-x-0 bottom-0 h-[26%] bg-gradient-to-t from-[#040611]/88 via-[#040611]/40 to-transparent pointer-events-none"
+            />
+          </div>
+
+          {/* Desktop & Tablet Editorial Overlay Content */}
+          <div className="hidden md:flex relative z-10 w-full max-w-[1400px] mx-auto px-8 lg:px-12 py-6 lg:py-14 items-center justify-between gap-8">
+            <div className="max-w-[400px] space-y-3.5 lg:space-y-5">
+              <p className="font-mono text-[11px] uppercase tracking-[0.24em] text-[#D4D4D3]">
+                STREETWEAR / CULTURE / YOU
+              </p>
+
+              <h1 className="font-street font-bold uppercase text-white tracking-[-0.025em] leading-[0.95] text-[clamp(2.25rem,4.6vw,4.15rem)]">
+                BUILT FOR
+                <br />
+                THE REAL
+                <br />
+                ONES.
+              </h1>
+
+              <p className="text-[13.5px] lg:text-[14px] text-[#E4E4E2]/90 leading-[1.55] lg:leading-[1.6] max-w-[340px]">
+                More than clothing — it&apos;s a mindset. PYTHOX WORLD is for the
+                dreamers, the doers, and the ones who stay solid.
+              </p>
+
+              <div className="pt-1 lg:pt-2">
+                <Link
+                  to="/shop"
+                  className="btn-base btn-outline-light group gap-5"
+                >
+                  <span>SHOP NOW</span>
+                  <ArrowRight className="h-4 w-4 transition-transform duration-200 group-hover:translate-x-1" />
+                </Link>
+              </div>
+            </div>
+
+            <div className="flex flex-col items-end self-end text-right font-mono text-[10px] uppercase tracking-[0.2em] text-white/70 space-y-1.5">
+              <span>EST. 2024</span>
+              <span className="tabular-nums text-white/55">23.8583° N</span>
+              <div className="flex items-center gap-3">
+                <span className="h-[1px] w-7 bg-white/40" />
+                <span className="tabular-nums text-white/55">90.2667° E</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Mobile Editorial Overlay Content (Upper-Left Copy + S-Arrow + Bottom CTA Bar) */}
+          <div className="md:hidden absolute inset-0 z-10">
+            <div className="absolute top-[74px] sm:top-[96px] left-3.5 sm:left-6 z-10 w-[52%] sm:w-[49%] max-w-[205px] sm:max-w-[260px] space-y-1 sm:space-y-1.5">
               <p className="font-mono text-[8px] sm:text-[9.5px] uppercase tracking-[0.14em] sm:tracking-[0.2em] text-[#D4D4E6]">
                 STREETWEAR / CULTURE / YOU
               </p>
@@ -298,7 +283,7 @@ export const HomePage: React.FC = () => {
             {/* Mobile-only decorative curved S-arrow guiding eye from hero copy to SHOP NOW */}
             <div
               aria-hidden="true"
-              className="md:hidden pointer-events-none select-none absolute left-3.5 sm:left-6 top-[200px] sm:top-[212px] bottom-[58px] sm:bottom-[68px] w-[150px] sm:w-[168px] z-[9]"
+              className="pointer-events-none select-none absolute left-3.5 sm:left-6 top-[198px] sm:top-[212px] bottom-[56px] sm:bottom-[68px] w-[150px] sm:w-[168px] z-[9]"
             >
               <svg
                 viewBox="0 0 120 180"
@@ -347,7 +332,7 @@ export const HomePage: React.FC = () => {
               </span>
             </div>
           </div>
-        )}
+        </div>
       </section>
 
       {/* ================= 2. 4-CARD EDITORIAL CATEGORY TILES (SINGLE 4-COL ROW ON ALL DEVICES) ================= */}
@@ -586,7 +571,11 @@ export const HomePage: React.FC = () => {
                           alt={product.name}
                           loading="lazy"
                           referrerPolicy="no-referrer"
-                          onError={() => markBroken(product.id)}
+                          onError={(e) =>
+                            handleCloudMediaImageError(e.currentTarget, imgSrc, () =>
+                              markBroken(product.id)
+                            )
+                          }
                           className="h-full w-full object-cover object-center transition-transform duration-500 ease-out [@media(hover:hover)]:group-hover:scale-[1.03]"
                         />
                       ) : (

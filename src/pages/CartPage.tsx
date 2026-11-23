@@ -4,6 +4,7 @@ import { Minus, Plus, Trash2, X } from 'lucide-react';
 import { useStore } from '../context/StoreContext';
 import { formatBDT } from '../lib/formatters';
 import { SeoHead } from '../components/SeoHead';
+import { handleCloudMediaImageError } from '../lib/cloudMediaFallback';
 
 export const CartPage: React.FC = () => {
   const {
@@ -97,6 +98,7 @@ export const CartPage: React.FC = () => {
                     src={item.image}
                     alt={item.name}
                     referrerPolicy="no-referrer"
+                    onError={(e) => handleCloudMediaImageError(e.currentTarget, item.image)}
                     className="h-full w-full object-cover"
                   />
                 </Link>

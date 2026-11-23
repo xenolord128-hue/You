@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { Minus, Plus, ShoppingBag, Trash2, X } from 'lucide-react';
 import { useStore } from '../context/StoreContext';
 import { formatBDT } from '../lib/formatters';
+import { handleCloudMediaImageError } from '../lib/cloudMediaFallback';
 
 export const CartDrawer: React.FC = () => {
   const {
@@ -106,6 +107,7 @@ export const CartDrawer: React.FC = () => {
                       src={item.image}
                       alt={item.name}
                       referrerPolicy="no-referrer"
+                      onError={(e) => handleCloudMediaImageError(e.currentTarget, item.image)}
                       className="h-full w-full object-cover"
                     />
                   </Link>

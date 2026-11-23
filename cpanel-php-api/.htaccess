@@ -1,0 +1,20 @@
+Options -Indexes
+
+<FilesMatch "^(\.env.*|config\.php|db\.php|auth\.php)$">
+  <IfModule mod_authz_core.c>
+    Require all denied
+  </IfModule>
+  <IfModule !mod_authz_core.c>
+    Order allow,deny
+    Deny from all
+  </IfModule>
+</FilesMatch>
+
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+
+  RewriteRule ^mysql/test/?$ mysql-test.php [L,QSA]
+  RewriteRule ^mysql/health/?$ mysql-test.php [L,QSA]
+  RewriteRule ^mysql/records/([a-zA-Z0-9_-]+)/?$ records.php?collection=$1 [L,QSA]
+  RewriteRule ^mysql/records/([a-zA-Z0-9_-]+)/([a-zA-Z0-9_-]+)/?$ records.php?collection=$1&id=$2 [L,QSA]
+</IfModule>

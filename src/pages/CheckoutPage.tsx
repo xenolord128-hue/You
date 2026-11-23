@@ -38,6 +38,7 @@ import {
   CheckoutStepper,
 } from '../components/CheckoutStepper';
 import { trackPixelEvent } from '../lib/metaPixel';
+import { handleCloudMediaImageError } from '../lib/cloudMediaFallback';
 
 const EMAILJS_SERVICE_ID = 'service_jlw1nj9';
 const EMAILJS_TEMPLATE_ID = 'template_ytbv3oj';
@@ -1186,6 +1187,7 @@ export const CheckoutPage: React.FC = () => {
                         src={item.image}
                         alt={item.name}
                         referrerPolicy="no-referrer"
+                        onError={(e) => handleCloudMediaImageError(e.currentTarget, item.image)}
                         className="h-11 w-9 rounded-lg object-cover border border-[#D9D9D9] shrink-0"
                       />
                     )}
@@ -1834,6 +1836,9 @@ export const CheckoutPage: React.FC = () => {
                                       src={item.image}
                                       alt={item.name}
                                       referrerPolicy="no-referrer"
+                                      onError={(e) =>
+                                        handleCloudMediaImageError(e.currentTarget, item.image)
+                                      }
                                       className="h-12 w-10 rounded-lg object-cover border border-[#D9D9D9] shrink-0"
                                     />
                                   )}
@@ -2451,6 +2456,9 @@ export const CheckoutPage: React.FC = () => {
                                   src={item.image}
                                   alt={item.name}
                                   referrerPolicy="no-referrer"
+                                  onError={(e) =>
+                                    handleCloudMediaImageError(e.currentTarget, item.image)
+                                  }
                                   className="h-full w-full object-cover"
                                 />
                               </div>
@@ -2476,6 +2484,12 @@ export const CheckoutPage: React.FC = () => {
                             src={activeDirectProduct.images[0]}
                             alt={activeDirectProduct.name}
                             referrerPolicy="no-referrer"
+                            onError={(e) =>
+                              handleCloudMediaImageError(
+                                e.currentTarget,
+                                activeDirectProduct.images[0]
+                              )
+                            }
                             className="h-full w-full object-cover"
                           />
                         </div>

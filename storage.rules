@@ -5,7 +5,7 @@ service firebase.storage {
     function isAdmin() {
       return request.auth != null
         && request.auth.token.email_verified == true
-        && request.auth.token.email in ['lord79915@gmail.com', 'pythoxfashion@gmail.com'];
+        && request.auth.token.email.lower() in ['lord79915@gmail.com', 'pythoxfashion@gmail.com'];
     }
 
     function isAllowedImage() {
@@ -31,6 +31,12 @@ service firebase.storage {
           'video/webm',
           'video/quicktime'
         ];
+    }
+
+    match /admin-test/{userId}/{allPaths=**} {
+      allow read: if isAdmin() && request.auth.uid == userId;
+      allow create, update: if isAdmin() && request.auth.uid == userId && isAllowedImage();
+      allow delete: if isAdmin() && request.auth.uid == userId;
     }
 
     match /products/images/{allPaths=**} {

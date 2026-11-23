@@ -6,6 +6,15 @@ import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { GoogleGenAI, Type } from '@google/genai';
+import {
+  deleteMysqlRecord,
+  getMysqlRecord,
+  listMysqlRecords,
+  testMysqlConnection,
+  upsertMysqlRecord,
+  validateCollectionName,
+  validateRecordId,
+} from './server/mysql';
 
 dotenv.config();
 
@@ -3087,6 +3096,137 @@ async function startServer() {
     } catch (error: unknown) {
       console.error('Copy generation error:', error instanceof Error ? error.message : error);
       res.status(503).json({ error: 'Copy generation service is unavailable right now.' });
+    }
+  });
+
+  // Safe MySQL Database Connection Test (never exposes password or credentials)
+  app.get(['/api/mysql/test', '/api/mysql/health'], async (_req, res) => {
+    const status = await testMysqlConnection();
+    return res.status(status.ok ? 200 : 503).json(status);
+  });
+
+  // Protected MySQL Application Data CRUD API (requires verified Admin session or Firebase Google Admin token)
+  app.get('/api/mysql/records/:collection', async (req, res) => {
+    if (!(await isAdminRequestAuthenticated(req))) {
+      return res.status(401).json({ error: 'Unauthorized admin session.' });
+    }
+    const col = validateCollectionName(String(req.params.collection || ''));
+    if (!col) {
+      return res.status(400).json({ error: 'Invalid or unsupported MySQL collection name.' });
+    }
+    const limit = Number(req.query.limit || 100);
+    const offset = Number(req.query.offset || 0);
+    try {
+      const records = await listMysqlRecords(col, limit, offset);
+      return res.json({ ok: true, collection: col, count: records.length, records });
+    } catch (err: unknown) {
+      console.error('[MySQL] List error:', err instanceof Error ? err.message : 'ERROR');
+      return res.status(503).json({ error: 'Unable to retrieve records from MySQL database.' });
+    }
+  });
+
+  app.get('/api/mysql/records/:collection/:id', async (req, res) => {
+    if (!(await isAdminRequestAuthenticated(req))) {
+      return res.status(401).json({ error: 'Unauthorized admin session.' });
+    }
+    const col = validateCollectionName(String(req.params.collection || ''));
+    const id = validateRecordId(String(req.params.id || ''));
+    if (!col || !id) {
+      return res.status(400).json({ error: 'Invalid collection or record ID.' });
+    }
+    try {
+      const record = await getMysqlRecord(col, id);
+      if (!record) {
+        return res.status(404).json({ error: 'Record not found.' });
+      }
+      return res.json({ ok: true, record });
+    } catch (err: unknown) {
+      console.error('[MySQL] Get error:', err instanceof Error ? err.message : 'ERROR');
+      return res.status(503).json({ error: 'Unable to retrieve record from MySQL database.' });
+    }
+  });
+
+  app.post('/api/mysql/records/:collection', async (req, res) => {
+    if (!(await isAdminRequestAuthenticated(req))) {
+      return res.status(401).json({ error: 'Unauthorized admin session.' });
+    }
+    const col = validateCollectionName(String(req.params.collection || ''));
+    if (!col) {
+      return res.status(400).json({ error: 'Invalid or unsupported MySQL collection name.' });
+    }
+    const body = (req.body || {}) as { id?: unknown; data?: unknown };
+    const rawId =
+      typeof body.id === 'string' && body.id.trim()
+        ? body.id.trim()
+        : `rec-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
+    const id = validateRecordId(rawId);
+    if (!id) {
+      return res.status(400).json({
+        error: 'Record ID must be 1–120 alphanumeric, underscore, or hyphen characters.',
+      });
+    }
+    if (!body.data || typeof body.data !== 'object' || Array.isArray(body.data)) {
+      return res.status(400).json({ error: 'Request body must include a JSON "data" object.' });
+    }
+    try {
+      const record = await upsertMysqlRecord(
+        col,
+        id,
+        body.data as Record<string, unknown>,
+        'admin'
+      );
+      return res.status(201).json({ ok: true, record });
+    } catch (err: unknown) {
+      console.error('[MySQL] Create error:', err instanceof Error ? err.message : 'ERROR');
+      return res.status(503).json({ error: 'Unable to save record to MySQL database.' });
+    }
+  });
+
+  app.put('/api/mysql/records/:collection/:id', async (req, res) => {
+    if (!(await isAdminRequestAuthenticated(req))) {
+      return res.status(401).json({ error: 'Unauthorized admin session.' });
+    }
+    const col = validateCollectionName(String(req.params.collection || ''));
+    const id = validateRecordId(String(req.params.id || ''));
+    if (!col || !id) {
+      return res.status(400).json({ error: 'Invalid collection or record ID.' });
+    }
+    const body = (req.body || {}) as { data?: unknown };
+    if (!body.data || typeof body.data !== 'object' || Array.isArray(body.data)) {
+      return res.status(400).json({ error: 'Request body must include a JSON "data" object.' });
+    }
+    try {
+      const record = await upsertMysqlRecord(
+        col,
+        id,
+        body.data as Record<string, unknown>,
+        'admin'
+      );
+      return res.json({ ok: true, record });
+    } catch (err: unknown) {
+      console.error('[MySQL] Update error:', err instanceof Error ? err.message : 'ERROR');
+      return res.status(503).json({ error: 'Unable to update record in MySQL database.' });
+    }
+  });
+
+  app.delete('/api/mysql/records/:collection/:id', async (req, res) => {
+    if (!(await isAdminRequestAuthenticated(req))) {
+      return res.status(401).json({ error: 'Unauthorized admin session.' });
+    }
+    const col = validateCollectionName(String(req.params.collection || ''));
+    const id = validateRecordId(String(req.params.id || ''));
+    if (!col || !id) {
+      return res.status(400).json({ error: 'Invalid collection or record ID.' });
+    }
+    try {
+      const deleted = await deleteMysqlRecord(col, id);
+      if (!deleted) {
+        return res.status(404).json({ error: 'Record not found.' });
+      }
+      return res.json({ ok: true, deleted: true, id });
+    } catch (err: unknown) {
+      console.error('[MySQL] Delete error:', err instanceof Error ? err.message : 'ERROR');
+      return res.status(503).json({ error: 'Unable to delete record from MySQL database.' });
     }
   });
 

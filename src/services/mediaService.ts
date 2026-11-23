@@ -1,5 +1,6 @@
 import { doc, getDocFromServer, setDoc } from 'firebase/firestore';
 import {
+  deleteObject,
   getDownloadURL,
   ref,
   uploadBytes,
@@ -9,6 +10,8 @@ import {
 import {
   auth,
   db,
+  FIREBASE_PROJECT_ID,
+  getStorageInstance,
   isVerifiedAdminUser,
   STORAGE_BUCKET,
   storage,
@@ -23,9 +26,13 @@ export type MediaFolder =
 
 export type MediaUploadStage =
   | 'validating'
+  | 'authenticating'
+  | 'probing-bucket'
   | 'preparing'
   | 'uploading'
+  | 'download-url'
   | 'verifying'
+  | 'firestore-save'
   | 'retrying'
   | 'complete'
   | 'error'
@@ -82,7 +89,7 @@ const DURABLE_IMAGE_MAX_DIM = 1600;
 
 const STORAGE_PROBE_TIMEOUT_MS = 3_500;
 const STORAGE_PROBE_SUCCESS_TTL_MS = 5 * 60 * 1000;
-const STORAGE_PROBE_FAILURE_TTL_MS = 45 * 1000;
+const STORAGE_PROBE_FAILURE_TTL_MS = 10 * 1000;
 
 const HANDSHAKE_STALL_MS = 15_000;
 const IMAGE_PROGRESS_STALL_MS = 35_000;
@@ -115,6 +122,7 @@ let inMemoryAdminSessionToken = '';
 
 interface StorageBucketProbeResult {
   available: boolean;
+  bucketName?: string;
   reason?: 'unconfigured' | 'bucket-not-found' | 'cors-or-network' | 'offline';
   httpStatus?: number;
   checkedAt: number;
@@ -912,7 +920,67 @@ function uploadViaBackendXhr(
  * before invoking `uploadBytesResumable`, preventing blind retry loops that culminate in
  * `storage/retry-limit-exceeded` when the Storage bucket is unprovisioned (HTTP 404) or offline.
  */
-export async function checkFirebaseStorageBucketStatus(): Promise<StorageBucketProbeResult> {
+async function probeSingleFirebaseBucket(bucketName: string): Promise<{
+  available: boolean;
+  bucketName: string;
+  reason?: 'bucket-not-found' | 'cors-or-network' | 'offline';
+  httpStatus?: number;
+}> {
+  const controller = new AbortController();
+  const timer = globalThis.setTimeout(() => controller.abort(), STORAGE_PROBE_TIMEOUT_MS);
+
+  try {
+    const probeUrl = `https://firebasestorage.googleapis.com/v0/b/${encodeURIComponent(
+      bucketName
+    )}/o?maxResults=1`;
+    const res = await fetch(probeUrl, {
+      method: 'GET',
+      mode: 'cors',
+      cache: 'no-store',
+      signal: controller.signal,
+    });
+
+    if (res.status === 404) {
+      return {
+        available: false,
+        bucketName,
+        reason: 'bucket-not-found',
+        httpStatus: 404,
+      };
+    }
+
+    // 200, 401, or 403 proves the Storage bucket exists and responds cleanly over CORS
+    if (res.ok || res.status === 401 || res.status === 403) {
+      return {
+        available: true,
+        bucketName,
+        httpStatus: res.status,
+      };
+    }
+
+    return {
+      available: false,
+      bucketName,
+      reason: 'cors-or-network',
+      httpStatus: res.status,
+    };
+  } catch {
+    return {
+      available: false,
+      bucketName,
+      reason:
+        typeof navigator !== 'undefined' && navigator.onLine === false
+          ? 'offline'
+          : 'cors-or-network',
+    };
+  } finally {
+    globalThis.clearTimeout(timer);
+  }
+}
+
+export async function checkFirebaseStorageBucketStatus(
+  forceFresh = false
+): Promise<StorageBucketProbeResult> {
   if (typeof navigator !== 'undefined' && navigator.onLine === false) {
     return {
       available: false,
@@ -930,7 +998,7 @@ export async function checkFirebaseStorageBucketStatus(): Promise<StorageBucketP
   }
 
   const now = Date.now();
-  if (cachedBucketProbe) {
+  if (!forceFresh && cachedBucketProbe) {
     const ttl = cachedBucketProbe.available
       ? STORAGE_PROBE_SUCCESS_TTL_MS
       : STORAGE_PROBE_FAILURE_TTL_MS;
@@ -939,69 +1007,57 @@ export async function checkFirebaseStorageBucketStatus(): Promise<StorageBucketP
     }
   }
 
-  const controller = new AbortController();
-  const timer = globalThis.setTimeout(() => controller.abort(), STORAGE_PROBE_TIMEOUT_MS);
-
-  try {
-    const probeUrl = `https://firebasestorage.googleapis.com/v0/b/${encodeURIComponent(
-      STORAGE_BUCKET
-    )}/o?maxResults=1`;
-    const res = await fetch(probeUrl, {
-      method: 'GET',
-      mode: 'cors',
-      cache: 'no-store',
-      signal: controller.signal,
-    });
-
-    if (res.status === 404) {
-      cachedBucketProbe = {
-        available: false,
-        reason: 'bucket-not-found',
-        httpStatus: 404,
-        checkedAt: Date.now(),
-      };
-      return cachedBucketProbe;
-    }
-
-    // 200, 401, or 403 proves the Storage bucket exists and responds cleanly over CORS
-    if (res.ok || res.status === 401 || res.status === 403) {
-      cachedBucketProbe = {
-        available: true,
-        httpStatus: res.status,
-        checkedAt: Date.now(),
-      };
-      return cachedBucketProbe;
-    }
-
-    cachedBucketProbe = {
-      available: false,
-      reason: 'cors-or-network',
-      httpStatus: res.status,
-      checkedAt: Date.now(),
-    };
-    return cachedBucketProbe;
-  } catch {
-    cachedBucketProbe = {
-      available: false,
-      reason:
-        typeof navigator !== 'undefined' && navigator.onLine === false
-          ? 'offline'
-          : 'cors-or-network',
-      checkedAt: Date.now(),
-    };
-    return cachedBucketProbe;
-  } finally {
-    globalThis.clearTimeout(timer);
+  const candidateBuckets = [STORAGE_BUCKET];
+  if (
+    FIREBASE_PROJECT_ID &&
+    STORAGE_BUCKET.endsWith('.firebasestorage.app') &&
+    !candidateBuckets.includes(`${FIREBASE_PROJECT_ID}.appspot.com`)
+  ) {
+    candidateBuckets.push(`${FIREBASE_PROJECT_ID}.appspot.com`);
   }
+
+  let lastResult: StorageBucketProbeResult = {
+    available: false,
+    bucketName: STORAGE_BUCKET,
+    reason: 'bucket-not-found',
+    checkedAt: Date.now(),
+  };
+
+  for (const candidate of candidateBuckets) {
+    const probe = await probeSingleFirebaseBucket(candidate);
+    lastResult = {
+      ...probe,
+      checkedAt: Date.now(),
+    };
+    if (probe.available) {
+      cachedBucketProbe = lastResult;
+      return cachedBucketProbe;
+    }
+    if (probe.reason !== 'bucket-not-found') {
+      break;
+    }
+  }
+
+  cachedBucketProbe = lastResult;
+  return cachedBucketProbe;
 }
 
 export function classifyFirebaseStorageError(
   error: unknown,
-  filename: string
+  filename: string,
+  stageOverride?: MediaUploadStage
 ): MediaUploadError {
   if (error instanceof MediaUploadError) return error;
 
-  const code = ((error as { code?: string })?.code || '').toLowerCase();
+  const errObj = error as {
+    code?: string;
+    status_?: number;
+    status?: number;
+    serverResponse?: string;
+  };
+  const code = (errObj?.code || '').toLowerCase();
+  const httpStatus = Number(errObj?.status_ ?? errObj?.status ?? 0) || 0;
+  const serverResp = String(errObj?.serverResponse || '').toLowerCase();
   const rawMessage = error instanceof Error ? error.message : String(error || '');
   const lowerMsg = rawMessage.toLowerCase();
 
@@ -1013,17 +1069,17 @@ export function classifyFirebaseStorageError(
     });
   }
 
-  if (code === 'storage/unauthorized') {
+  if (code === 'storage/unauthenticated' || httpStatus === 401) {
     return new MediaUploadError(
-      'Firebase Storage permission denied (storage/unauthorized). Verify your Google Admin sign-in and published storage.rules.',
-      { code, isPermanent: true, stage: 'error' }
+      `Authentication stage failed (storage/unauthenticated): Google Admin sign-in expired or missing while uploading ${filename}.`,
+      { code: 'storage/unauthenticated', isPermanent: true, stage: 'authenticating' }
     );
   }
 
-  if (code === 'storage/unauthenticated') {
+  if (code === 'storage/unauthorized' || httpStatus === 403) {
     return new MediaUploadError(
-      'Admin authentication expired (storage/unauthenticated). Sign in with Google Admin and retry.',
-      { code, isPermanent: true, stage: 'error' }
+      `Storage permission denied (storage/unauthorized): Authenticated user is not permitted by storage.rules to write ${filename}.`,
+      { code: 'storage/unauthorized', isPermanent: true, stage: 'uploading' }
     );
   }
 
@@ -1031,18 +1087,27 @@ export function classifyFirebaseStorageError(
     code === 'storage/bucket-not-found' ||
     code === 'storage/project-not-found' ||
     code === 'storage/no-default-bucket' ||
+    httpStatus === 404 ||
+    serverResp.includes('bucket does not exist') ||
     lowerMsg.includes('bucket does not exist')
   ) {
     return new MediaUploadError(
-      `Firebase Storage bucket "${STORAGE_BUCKET}" was not found. Enable Storage in Firebase Console -> Storage -> Get Started.`,
-      { code: code || 'storage/bucket-not-found', isPermanent: true, stage: 'error' }
+      `Invalid or unactivated bucket (storage/bucket-not-found): Firebase Storage bucket "${STORAGE_BUCKET}" returned HTTP 404 on project "${FIREBASE_PROJECT_ID || 'pythoxworld'}". Enable Storage in Firebase Console -> Storage -> Get Started and publish storage.rules.`,
+      { code: 'storage/bucket-not-found', isPermanent: true, stage: 'probing-bucket' }
+    );
+  }
+
+  if (stageOverride === 'download-url') {
+    return new MediaUploadError(
+      `getDownloadURL failure for ${filename} (${code || 'unknown'}): ${rawMessage || 'Could not obtain a public download URL after upload.'}`,
+      { code: code || 'DOWNLOAD_URL_FAILED', isPermanent: false, stage: 'download-url' }
     );
   }
 
   if (code === 'storage/quota-exceeded') {
     return new MediaUploadError(
-      'Firebase Storage quota exceeded. Upgrade your Firebase Storage plan or free space.',
-      { code, isPermanent: true, stage: 'error' }
+      'Storage quota exceeded (storage/quota-exceeded): Upgrade your Firebase Storage plan or free space.',
+      { code, isPermanent: true, stage: 'uploading' }
     );
   }
 
@@ -1052,35 +1117,35 @@ export function classifyFirebaseStorageError(
     code === 'storage/invalid-format'
   ) {
     return new MediaUploadError(
-      `${filename}: rejected by Firebase Storage (${code}). Check file integrity and format.`,
-      { code, isPermanent: true, stage: 'error' }
+      `Invalid file rejected by Storage (${code}) for ${filename}: Check file integrity and format.`,
+      { code, isPermanent: true, stage: 'validating' }
     );
   }
 
   if (typeof navigator !== 'undefined' && navigator.onLine === false) {
     return new MediaUploadError(
-      `Internet connection lost while uploading ${filename}. Reconnect and click Retry.`,
-      { code: 'OFFLINE', isPermanent: true, stage: 'error' }
+      `Network failure (offline) while uploading ${filename}. Reconnect to the internet and retry.`,
+      { code: 'OFFLINE', isPermanent: true, stage: 'uploading' }
     );
   }
 
   if (code === 'storage/retry-limit-exceeded') {
     return new MediaUploadError(
-      `Firebase Storage upload could not complete for ${filename} (storage/retry-limit-exceeded). Check Firebase Storage bucket status, CORS policy, or network stability and try again.`,
-      { code, isPermanent: false, stage: 'error' }
+      `Upload stage failed for ${filename} (storage/retry-limit-exceeded): Firebase Storage upload request could not complete (usually caused by an unactivated 404 bucket failing CORS preflight, missing CORS config, or mobile network interruption).`,
+      { code, isPermanent: false, stage: 'uploading' }
     );
   }
 
   if (code === 'storage/unknown' || code === 'network_stall') {
     return new MediaUploadError(
-      `Temporary network interruption while uploading ${filename}.`,
-      { code: code || 'storage/unknown', isPermanent: false, stage: 'error' }
+      `Network or upload timeout error while uploading ${filename} (${code || 'storage/unknown'}).`,
+      { code: code || 'storage/unknown', isPermanent: false, stage: 'uploading' }
     );
   }
 
   return new MediaUploadError(
-    rawMessage || `Failed to upload ${filename} to Firebase Storage.`,
-    { code: code || 'storage/upload-failed', isPermanent: false, stage: 'error' }
+    rawMessage || `Failed during ${stageOverride || 'uploading'} for ${filename}.`,
+    { code: code || 'storage/upload-failed', isPermanent: false, stage: stageOverride || 'error' }
   );
 }
 
@@ -1089,6 +1154,7 @@ async function attemptSingleFirebaseStorageUpload(
   folder: MediaFolder,
   mimeType: string,
   isVideo: boolean,
+  targetBucketName?: string,
   onProgress?: (pct: number) => void,
   signal?: AbortSignal
 ): Promise<string> {
@@ -1100,9 +1166,13 @@ async function attemptSingleFirebaseStorageUpload(
     });
   }
 
+  const targetStorage = getStorageInstance(targetBucketName);
+  targetStorage.maxUploadRetryTime = 10_000;
+  targetStorage.maxOperationRetryTime = 10_000;
+
   const fallbackExt = isVideo ? '.mp4' : '.jpg';
   const objectPath = `${folder}/${Date.now()}-${Math.floor(100 + Math.random() * 899)}-${sanitizeFileName(file.name, fallbackExt)}`;
-  const storageRef = ref(storage, objectPath);
+  const storageRef = ref(targetStorage, objectPath);
   const metadata = {
     contentType: mimeType,
     cacheControl: 'public, max-age=31536000',
@@ -1110,31 +1180,72 @@ async function attemptSingleFirebaseStorageUpload(
 
   logUploadStage('Start', {
     provider: 'firebase-storage',
-    bucket: STORAGE_BUCKET,
+    bucket: targetBucketName || STORAGE_BUCKET,
     objectPath,
     sizeBytes: file.size,
     contentType: mimeType,
     mode: !isVideo && file.size <= SMALL_IMAGE_DIRECT_UPLOAD_BYTES ? 'uploadBytes' : 'uploadBytesResumable',
   });
 
-  // Fast single-shot upload for small images (<= 256 KB)
+  // Fast single-shot upload for small images (<= 256 KB) with explicit abort + timeout guard
   if (!isVideo && file.size <= SMALL_IMAGE_DIRECT_UPLOAD_BYTES) {
     onProgress?.(25);
-    const snapshot = await uploadBytes(storageRef, file, metadata);
-    if (signal?.aborted) {
-      throw new MediaUploadError(`Upload cancelled for ${file.name}.`, {
-        code: 'ABORTED',
-        isPermanent: true,
-        stage: 'cancelled',
-      });
-    }
+    const snapshot = await new Promise<Awaited<ReturnType<typeof uploadBytes>>>((resolve, reject) => {
+      let done = false;
+      const timer = window.setTimeout(() => {
+        if (done) return;
+        done = true;
+        signal?.removeEventListener('abort', onAbort);
+        reject(
+          new MediaUploadError(
+            `Upload timeout for ${file.name}: direct Storage upload did not finish within 25s.`,
+            { code: 'UPLOAD_TIMEOUT', isPermanent: false, stage: 'uploading' }
+          )
+        );
+      }, 25_000);
+      const onAbort = () => {
+        if (done) return;
+        done = true;
+        window.clearTimeout(timer);
+        reject(
+          new MediaUploadError(`Upload cancelled for ${file.name}.`, {
+            code: 'ABORTED',
+            isPermanent: true,
+            stage: 'cancelled',
+          })
+        );
+      };
+      signal?.addEventListener('abort', onAbort, { once: true });
+
+      uploadBytes(storageRef, file, metadata)
+        .then((snap) => {
+          if (done) return;
+          done = true;
+          window.clearTimeout(timer);
+          signal?.removeEventListener('abort', onAbort);
+          resolve(snap);
+        })
+        .catch((err) => {
+          if (done) return;
+          done = true;
+          window.clearTimeout(timer);
+          signal?.removeEventListener('abort', onAbort);
+          reject(err);
+        });
+    });
+
     onProgress?.(92);
-    const url = await getDownloadURL(snapshot.ref);
+    let url = '';
+    try {
+      url = await getDownloadURL(snapshot.ref);
+    } catch (dlErr) {
+      throw classifyFirebaseStorageError(dlErr, file.name, 'download-url');
+    }
     if (!isValidUploadedMediaUrl(url)) {
-      throw new MediaUploadError(`Invalid Firebase Storage download URL returned for ${file.name}.`, {
+      throw new MediaUploadError(`getDownloadURL failure: invalid URL returned for ${file.name}.`, {
         code: 'INVALID_DOWNLOAD_URL',
         isPermanent: true,
-        stage: 'verifying',
+        stage: 'download-url',
       });
     }
     onProgress?.(100);
@@ -1255,11 +1366,16 @@ async function attemptSingleFirebaseStorageUpload(
             objectPath,
             sizeBytes: file.size,
           });
-          const url = await getDownloadURL(task.snapshot.ref);
+          let url = '';
+          try {
+            url = await getDownloadURL(task.snapshot.ref);
+          } catch (dlErr) {
+            throw classifyFirebaseStorageError(dlErr, file.name, 'download-url');
+          }
           if (!isValidUploadedMediaUrl(url)) {
             throw new MediaUploadError(
-              `Invalid download URL returned by Firebase Storage for ${file.name}.`,
-              { code: 'INVALID_DOWNLOAD_URL', isPermanent: true, stage: 'verifying' }
+              `getDownloadURL failure: invalid download URL returned by Firebase Storage for ${file.name}.`,
+              { code: 'INVALID_DOWNLOAD_URL', isPermanent: true, stage: 'download-url' }
             );
           }
           settled = true;
@@ -1272,7 +1388,7 @@ async function attemptSingleFirebaseStorageUpload(
           });
           resolve(url);
         } catch (err) {
-          failWith(classifyFirebaseStorageError(err, file.name));
+          failWith(classifyFirebaseStorageError(err, file.name, 'download-url'));
         }
       }
     );
@@ -1284,6 +1400,7 @@ async function uploadViaFirebaseStorageWithRetry(
   folder: MediaFolder,
   mimeType: string,
   isVideo: boolean,
+  targetBucketName?: string,
   onProgress?: (pct: number) => void,
   signal?: AbortSignal,
   onStageChange?: (stage: MediaUploadStage) => void
@@ -1340,6 +1457,7 @@ async function uploadViaFirebaseStorageWithRetry(
         folder,
         mimeType,
         isVideo,
+        targetBucketName,
         onProgress,
         signal
       );
@@ -1439,11 +1557,13 @@ export async function uploadMediaToFirebase(
         });
       }
 
-      // Stage 2: Verify Admin Authentication & refresh ID token
+      // Stage 2: Wait for Firebase Auth persistence hydration, verify Admin user & refresh ID token
+      options?.onStageChange?.('authenticating');
+      await auth.authStateReady();
       if (!isVerifiedAdminUser(auth.currentUser)) {
         throw new MediaUploadError(
-          'Google Admin sign-in (lord79915@gmail.com or pythoxfashion@gmail.com) is required to upload product media permanently.',
-          { code: 'storage/unauthenticated', isPermanent: true, stage: 'error' }
+          'Authentication stage failed (storage/unauthenticated): Google Admin sign-in (lord79915@gmail.com or pythoxfashion@gmail.com) is required to upload product media permanently.',
+          { code: 'storage/unauthenticated', isPermanent: true, stage: 'authenticating' }
         );
       }
 
@@ -1455,26 +1575,30 @@ export async function uploadMediaToFirebase(
       }
       if (!firebaseIdToken) {
         throw new MediaUploadError(
-          'Google Admin session expired. Please re-authenticate with Google Admin and try again.',
-          { code: 'storage/unauthenticated', isPermanent: true, stage: 'error' }
+          'Authentication stage failed (storage/unauthenticated): Google Admin session expired. Please re-authenticate and retry.',
+          { code: 'storage/unauthenticated', isPermanent: true, stage: 'authenticating' }
         );
       }
 
       const sessionToken = sessionTokenOverride ?? inMemoryAdminSessionToken;
       onProgress?.(2);
-      options?.onStageChange?.('preparing');
+      options?.onStageChange?.('probing-bucket');
 
       // Stage 3: Probe Firebase Storage bucket availability cleanly
       const bucketProbe = await checkFirebaseStorageBucketStatus();
+      const activeBucket = bucketProbe.bucketName || STORAGE_BUCKET;
       logUploadStage('Start', {
         name: file.name,
         folder,
         kind,
         sizeBytes: file.size,
-        storageBucket: STORAGE_BUCKET,
+        storageBucket: activeBucket,
         bucketAvailable: bucketProbe.available,
         bucketProbeReason: bucketProbe.reason || 'ok',
+        httpStatus: bucketProbe.httpStatus,
       });
+
+      options?.onStageChange?.('preparing');
 
       // Path A: Firebase Storage bucket IS provisioned and healthy -> use real Firebase Storage!
       if (bucketProbe.available) {
@@ -1495,6 +1619,7 @@ export async function uploadMediaToFirebase(
             folder,
             storageMime,
             isVideo,
+            activeBucket,
             onProgress,
             signal,
             options?.onStageChange
@@ -1648,4 +1773,127 @@ export async function uploadMediaToFirebase(
   });
 
   return promise;
+}
+
+export interface MinimalStorageTestResult {
+  ok: boolean;
+  failedStage?: MediaUploadStage;
+  code?: string;
+  message: string;
+  bucket: string;
+  objectPath: string;
+  uid?: string;
+  downloadUrl?: string;
+}
+
+/**
+ * Minimal internal Storage diagnostic test using the exact app/auth/storage instance
+ * and authenticated admin session against `admin-test/{uid}/test-image.jpg`.
+ */
+export async function runMinimalStorageUploadTest(): Promise<MinimalStorageTestResult> {
+  await auth.authStateReady();
+  const user = auth.currentUser;
+  const uid = user?.uid || 'anonymous';
+  const objectPath = `admin-test/${uid}/test-image.jpg`;
+
+  if (!isVerifiedAdminUser(user)) {
+    return {
+      ok: false,
+      failedStage: 'authenticating',
+      code: 'storage/unauthenticated',
+      message: 'Unauthenticated: sign in with an authorized Google Admin account first.',
+      bucket: STORAGE_BUCKET,
+      objectPath,
+    };
+  }
+
+  try {
+    await user!.getIdToken(true);
+  } catch {
+    return {
+      ok: false,
+      failedStage: 'authenticating',
+      code: 'storage/unauthenticated',
+      message: 'Authentication token refresh failed for current admin user.',
+      bucket: STORAGE_BUCKET,
+      objectPath,
+      uid,
+    };
+  }
+
+  const probe = await checkFirebaseStorageBucketStatus(true);
+  const activeBucket = probe.bucketName || STORAGE_BUCKET;
+  if (!probe.available) {
+    return {
+      ok: false,
+      failedStage: 'probing-bucket',
+      code: probe.reason === 'bucket-not-found' ? 'storage/bucket-not-found' : 'NETWORK_ERROR',
+      message:
+        probe.reason === 'bucket-not-found'
+          ? `Invalid or unactivated bucket "${activeBucket}" (HTTP ${probe.httpStatus || 404}). Enable Firebase Storage in Firebase Console -> Storage -> Get Started.`
+          : `Storage endpoint unreachable (${probe.reason || 'cors-or-network'}).`,
+      bucket: activeBucket,
+      objectPath,
+      uid,
+    };
+  }
+
+  // Minimal valid 1x1 JPEG payload
+  const tinyJpegBytes = new Uint8Array([
+    0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x01, 0x00, 0x48,
+    0x00, 0x48, 0x00, 0x00, 0xff, 0xdb, 0x00, 0x43, 0x00, 0x03, 0x02, 0x02, 0x03, 0x02, 0x02, 0x03,
+    0x03, 0x03, 0x03, 0x04, 0x03, 0x03, 0x04, 0x05, 0x08, 0x05, 0x05, 0x04, 0x04, 0x05, 0x0a, 0x07,
+    0x07, 0x06, 0x08, 0x0c, 0x0a, 0x0c, 0x0c, 0x0b, 0x0a, 0x0b, 0x0b, 0x0d, 0x0e, 0x12, 0x10, 0x0d,
+    0x0e, 0x11, 0x0e, 0x0b, 0x0b, 0x10, 0x16, 0x10, 0x11, 0x13, 0x14, 0x15, 0x15, 0x15, 0x0c, 0x0f,
+    0x17, 0x18, 0x16, 0x14, 0x18, 0x12, 0x14, 0x15, 0x14, 0xff, 0xc0, 0x00, 0x0b, 0x08, 0x00, 0x01,
+    0x00, 0x01, 0x01, 0x01, 0x11, 0x00, 0xff, 0xc4, 0x00, 0x14, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0xff, 0xc4, 0x00, 0x14,
+    0x10, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0xff, 0xda, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3f, 0x00, 0xd2, 0xcf, 0x20, 0xff,
+    0xd9,
+  ]);
+  const testStorage = getStorageInstance(activeBucket);
+  testStorage.maxUploadRetryTime = 8_000;
+  testStorage.maxOperationRetryTime = 8_000;
+  const testRef = ref(testStorage, objectPath);
+
+  try {
+    const snap = await uploadBytes(testRef, tinyJpegBytes, { contentType: 'image/jpeg' });
+    let downloadUrl = '';
+    try {
+      downloadUrl = await getDownloadURL(snap.ref);
+    } catch (dlErr) {
+      const classifiedDl = classifyFirebaseStorageError(dlErr, 'test-image.jpg', 'download-url');
+      return {
+        ok: false,
+        failedStage: 'download-url',
+        code: classifiedDl.code,
+        message: classifiedDl.message,
+        bucket: activeBucket,
+        objectPath,
+        uid,
+      };
+    }
+
+    await deleteObject(snap.ref).catch(() => {});
+    return {
+      ok: true,
+      message: `Minimal Storage test succeeded against ${activeBucket}/${objectPath}.`,
+      bucket: activeBucket,
+      objectPath,
+      uid,
+      downloadUrl,
+    };
+  } catch (err) {
+    const classified = classifyFirebaseStorageError(err, 'test-image.jpg');
+    return {
+      ok: false,
+      failedStage: classified.stage,
+      code: classified.code,
+      message: classified.message,
+      bucket: activeBucket,
+      objectPath,
+      uid,
+    };
+  }
 }

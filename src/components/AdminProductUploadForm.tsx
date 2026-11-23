@@ -146,6 +146,28 @@ function buildInitialSku(): string {
   return `PW-MN-${Math.floor(100 + Math.random() * 899)}`;
 }
 
+function formatProductSubmitError(err: unknown): string {
+  if (!(err instanceof Error)) {
+    return 'Unable to save product. Please review your connection and try again.';
+  }
+  const raw = err.message.trim();
+  if (raw.startsWith('{') && raw.includes('"operationType"')) {
+    try {
+      const parsed = JSON.parse(raw) as {
+        error?: string;
+        operationType?: string;
+        path?: string;
+      };
+      const inner = parsed.error || 'Firestore permission or write failure.';
+      const target = parsed.path ? ` on ${parsed.path}` : '';
+      return `Firestore save failure (${parsed.operationType || 'write'}${target}): ${inner}`;
+    } catch {
+      // fall through to raw message
+    }
+  }
+  return raw || 'Unable to save product. Please review your connection and try again.';
+}
+
 export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
   categories,
   collections,
@@ -586,9 +608,10 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
     const target = imagesRef.current.find((i) => i.id === id);
     if (!target || !target.file || target.status === 'uploading') return;
 
+    await auth.authStateReady();
     if (!isFirebaseAdminLinked || !isVerifiedAdminUser(auth.currentUser)) {
       const msg =
-        'Google Admin sign-in (lord79915@gmail.com or pythoxfashion@gmail.com) is required before uploading.';
+        'Authentication failed (storage/unauthenticated): Google Admin sign-in (lord79915@gmail.com or pythoxfashion@gmail.com) is required before uploading.';
       setErrors((prev) => ({ ...prev, submit: msg }));
       showToast(msg);
       return;
@@ -746,9 +769,10 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
     const currentVideo = videoRef.current;
     if (!currentVideo || !currentVideo.file || currentVideo.status === 'uploading') return;
 
+    await auth.authStateReady();
     if (!isFirebaseAdminLinked || !isVerifiedAdminUser(auth.currentUser)) {
       const msg =
-        'Google Admin sign-in (lord79915@gmail.com or pythoxfashion@gmail.com) is required before uploading.';
+        'Authentication failed (storage/unauthenticated): Google Admin sign-in (lord79915@gmail.com or pythoxfashion@gmail.com) is required before uploading.';
       setErrors((prev) => ({ ...prev, submit: msg }));
       showToast(msg);
       return;
@@ -910,9 +934,10 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
     if (isSubmitting) return;
 
     setSuccessBanner(null);
+    await auth.authStateReady();
     if (!isFirebaseAdminLinked || !isVerifiedAdminUser(auth.currentUser)) {
       const msg =
-        'Google Admin sign-in (lord79915@gmail.com or pythoxfashion@gmail.com) is required before publishing so products save permanently to Firestore.';
+        'Authentication failed (storage/unauthenticated): Google Admin sign-in (lord79915@gmail.com or pythoxfashion@gmail.com) is required before publishing so products save permanently to Firestore.';
       setErrors({ submit: msg });
       showToast(msg);
       return;
@@ -1171,10 +1196,7 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
         );
       }
     } catch (err: unknown) {
-      const msg =
-        err instanceof Error
-          ? err.message
-          : 'Unable to save product. Please review your connection and try again.';
+      const msg = formatProductSubmitError(err);
       setErrors((prev) => ({ ...prev, submit: msg }));
       setSubmitStatusText('');
       setSubmitProgress(0);

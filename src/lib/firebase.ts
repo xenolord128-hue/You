@@ -19,14 +19,20 @@ export const ADMIN_EMAIL = ADMIN_EMAILS[0];
 const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
+export const FIREBASE_PROJECT_ID = (firebaseConfig.projectId || '').trim();
 export const STORAGE_BUCKET = (firebaseConfig.storageBucket || '').trim();
 export const storage = STORAGE_BUCKET
   ? getStorage(app, `gs://${STORAGE_BUCKET.replace(/^gs:\/\//i, '')}`)
   : getStorage(app);
 
+export function getStorageInstance(bucketName?: string) {
+  const cleanBucket = (bucketName || STORAGE_BUCKET || '').trim().replace(/^gs:\/\//i, '');
+  return cleanBucket ? getStorage(app, `gs://${cleanBucket}`) : storage;
+}
+
 export function getFirebaseStorageConfigInfo() {
   return {
-    projectId: (firebaseConfig.projectId || '').trim(),
+    projectId: FIREBASE_PROJECT_ID,
     storageBucket: STORAGE_BUCKET,
     configured: Boolean(STORAGE_BUCKET),
   };

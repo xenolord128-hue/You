@@ -396,7 +396,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
   );
   const [backendConnected, setBackendConnected] = useState(false);
   const adminUserEmail = isFirebaseAdminLinked
-    ? adminUser?.email || 'lord79915@gmail.com'
+    ? adminUser?.email || 'Authorized Admin'
     : passwordAdminAuthed
       ? 'Administrator Session'
       : '';
@@ -1447,7 +1447,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     async (product: Product): Promise<Product> => {
       if (!isVerifiedAdminUser(auth.currentUser)) {
         throw new Error(
-          'Google Admin sign-in (lord79915@gmail.com or pythoxfashion@gmail.com) is required to permanently save products to Firestore. Click "Link Cloud Sync" above.'
+          'Authorized Google Admin sign-in is required to permanently save products to Firestore. Click "Link Cloud Sync" above.'
         );
       }
 

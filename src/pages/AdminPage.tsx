@@ -634,7 +634,7 @@ export const AdminPage: React.FC = () => {
               {adminSetupRequired ? 'Set Admin Password' : 'Administrator Access'}
             </h1>
             <p className="text-[13px] text-[#6A6A6A] leading-relaxed">
-              Sign in with your authorized Google account (<span className="font-mono text-[#0A0A0A]">lord79915@gmail.com</span> or <span className="font-mono text-[#0A0A0A]">pythoxfashion@gmail.com</span>) so uploaded products and images save permanently to Cloud Database.
+              Sign in with your authorized Google account so uploaded products and images save permanently to Cloud Database.
             </p>
           </div>
 
@@ -1257,7 +1257,7 @@ export const AdminPage: React.FC = () => {
                 disabled={linkingCloud}
                 onClick={() => void handleLinkFirebaseCloud()}
                 className="admin-btn inline-flex items-center gap-1.5"
-                title="Optionally link Google Admin (lord79915@gmail.com or pythoxfashion@gmail.com) to mirror products and media to Firebase Firestore"
+                title="Optionally link an authorized Google Admin account to mirror products and media to Firebase Firestore"
               >
                 {linkingCloud ? 'Linking Cloud...' : 'Link Cloud Sync'}
               </button>
@@ -1288,7 +1288,7 @@ export const AdminPage: React.FC = () => {
           <div className="rounded-2xl border border-[#991B1B] bg-[#FEF2F2] px-4 py-3.5 flex flex-wrap items-center justify-between gap-3 text-xs text-[#7F1D1D]">
             <p className="leading-relaxed">
               <strong className="text-[#7F1D1D]">Cloud Database Connection Required to Upload/Publish:</strong>{' '}
-              You unlocked with Server Password only. Connect Google Admin (<span className="font-mono">lord79915@gmail.com</span> or <span className="font-mono">pythoxfashion@gmail.com</span>) so uploaded products and images save permanently to Firestore instead of disappearing after server restarts.
+              You unlocked with Server Password only. Connect an authorized Google Admin account so uploaded products and images save permanently to Firestore instead of disappearing after server restarts.
             </p>
             <button
               type="button"

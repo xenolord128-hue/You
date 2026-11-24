@@ -120,7 +120,7 @@ export async function signInAdminWithGoogle(): Promise<User> {
     if (!isVerifiedAdminUser(credential.user)) {
       await signOut(auth);
       throw new Error(
-        `Access denied. Sign in with an authorized administrator account (${ADMIN_EMAILS.join(' or ')}).`
+        'Access denied. This Google account is not authorized for administrator access.'
       );
     }
     return credential.user;

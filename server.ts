@@ -2264,7 +2264,7 @@ async function startServer() {
         return res.status(403).json({
           code: 'FIREBASE_AUTH_REQUIRED',
           error:
-            'Google Admin sign-in (lord79915@gmail.com or pythoxfashion@gmail.com) is required to upload product images permanently to Cloud Storage.',
+            'Authorized Google Admin sign-in is required to upload product images permanently to Cloud Storage.',
         });
       }
     }
@@ -2466,7 +2466,7 @@ async function startServer() {
       return res.status(403).json({
         code: 'FIREBASE_AUTH_REQUIRED',
         error:
-          'Google Admin sign-in (lord79915@gmail.com or pythoxfashion@gmail.com) is required so uploaded products save permanently to Firestore.',
+          'Authorized Google Admin sign-in is required so uploaded products save permanently to Firestore.',
       });
     }
 

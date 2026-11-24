@@ -1562,7 +1562,7 @@ export async function uploadMediaToFirebase(
       await auth.authStateReady();
       if (!isVerifiedAdminUser(auth.currentUser)) {
         throw new MediaUploadError(
-          'Authentication stage failed (storage/unauthenticated): Google Admin sign-in (lord79915@gmail.com or pythoxfashion@gmail.com) is required to upload product media permanently.',
+          'Authentication stage failed (storage/unauthenticated): Authorized Google Admin sign-in is required to upload product media permanently.',
           { code: 'storage/unauthenticated', isPermanent: true, stage: 'authenticating' }
         );
       }

@@ -561,7 +561,7 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
     await auth.authStateReady();
     if (!isFirebaseAdminLinked || !isVerifiedAdminUser(auth.currentUser)) {
       const msg =
-        'Authentication failed (storage/unauthenticated): Google Admin sign-in (lord79915@gmail.com or pythoxfashion@gmail.com) is required before uploading.';
+        'Authentication failed (storage/unauthenticated): Authorized Google Admin sign-in is required before uploading.';
       setErrors((prev) => ({ ...prev, submit: msg }));
       showToast(msg);
       return;
@@ -765,7 +765,7 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
     await auth.authStateReady();
     if (!isFirebaseAdminLinked || !isVerifiedAdminUser(auth.currentUser)) {
       const msg =
-        'Authentication failed (storage/unauthenticated): Google Admin sign-in (lord79915@gmail.com or pythoxfashion@gmail.com) is required before publishing so products save permanently to Firestore.';
+        'Authentication failed (storage/unauthenticated): Authorized Google Admin sign-in is required before publishing so products save permanently to Firestore.';
       setErrors({ submit: msg });
       showToast(msg);
       return;
@@ -1114,7 +1114,7 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
                 Connect Google Admin to Save Products Permanently
               </span>
               <span>
-                Publishing requires Google Admin verification (lord79915@gmail.com or pythoxfashion@gmail.com) so product images and data write permanently to Cloud Firestore and never disappear.
+                Publishing requires authorized Google Admin verification so product images and data write permanently to Cloud Firestore and never disappear.
               </span>
             </div>
           </div>

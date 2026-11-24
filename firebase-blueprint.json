@@ -218,6 +218,23 @@
         "createdAt": { "type": "string", "maxLength": 64 }
       },
       "required": ["id", "kind", "mimeType", "filename", "sizeBytes", "dataBase64", "createdAt"]
+    },
+    "ProductSale": {
+      "title": "ProductSale",
+      "description": "Non-PII aggregated sales counter per product computed strictly from confirmed and fulfilled customer orders.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "productId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "sku": { "type": "string", "maxLength": 80 },
+        "productName": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "unitsSold": { "type": "number" },
+        "revenue": { "type": "number" },
+        "orderCount": { "type": "number" },
+        "lastSoldAt": { "type": "string", "maxLength": 64 },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "productId", "productName", "unitsSold", "revenue", "orderCount", "updatedAt"]
     }
   },
   "firestore": {
@@ -260,6 +277,10 @@
     "/media_assets/{mediaId}": {
       "schema": { "$ref": "#/entities/MediaAsset" },
       "description": "Persistent binary image payloads accessed by exact ID only (no list) and managed strictly by admins."
+    },
+    "/product_sales/{productId}": {
+      "schema": { "$ref": "#/entities/ProductSale" },
+      "description": "Public non-PII aggregated sales statistics per product derived from confirmed/fulfilled orders and writable strictly by admins."
     }
   }
 }

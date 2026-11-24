@@ -187,3 +187,29 @@ export interface BlogPost {
   readTime: string;
   image: string;
 }
+
+export type OrderNotificationStatus = 'pending' | 'sent' | 'failed';
+
+export type OrderNotificationChannel =
+  | 'emailjs_server'
+  | 'emailjs_client'
+  | 'resend'
+  | 'webhook'
+  | 'none';
+
+export interface OrderNotificationRecord {
+  id: string;
+  orderId: string;
+  orderNumber: string;
+  status: OrderNotificationStatus;
+  attempts: number;
+  channel?: OrderNotificationChannel;
+  lastError?: string;
+  sentAt?: string;
+  createdAt: string;
+  updatedAt: string;
+  messageText: string;
+  templateParams: Record<string, string>;
+}
+
+export type { ProductSaleStat } from '../lib/salesAnalytics';

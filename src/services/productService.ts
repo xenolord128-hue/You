@@ -13,7 +13,9 @@ import {
   Collection,
   Coupon,
   Order,
+  OrderNotificationRecord,
   Product,
+  ProductSaleStat,
   Review,
   StoreSettings,
 } from '../types/ecommerce';
@@ -23,11 +25,13 @@ import {
   isVerifiedAdminUser,
 } from '../lib/firebase';
 import { apiUrl } from '../lib/api';
+import { computeProductSalesFromOrders, sortProductSalesDescending } from '../lib/salesAnalytics';
 
 export interface PublicCatalogResponse {
   connected: boolean;
   backendAvailable: boolean;
   products: Product[];
+  productSales?: ProductSaleStat[];
   productsError?: string | null;
   categories?: Category[];
   collections?: Collection[];
@@ -39,11 +43,13 @@ export interface PublicCatalogResponse {
 export interface AdminCatalogResponse {
   backendAvailable: boolean;
   products?: Product[];
+  productSales?: ProductSaleStat[];
   categories?: Category[];
   collections?: Collection[];
   coupons?: Coupon[];
   orders?: Order[];
   reviews?: Review[];
+  orderNotifications?: OrderNotificationRecord[];
 }
 
 function isPublishedProduct(product: unknown): product is Product {
@@ -104,6 +110,7 @@ async function fetchBackendStore(): Promise<BackendStoreFetchResult> {
     const data = (await res.json()) as {
       connected?: boolean;
       products?: Product[];
+      productSales?: ProductSaleStat[];
       categories?: Category[];
       collections?: Collection[];
       reviews?: Review[];
@@ -115,6 +122,7 @@ async function fetchBackendStore(): Promise<BackendStoreFetchResult> {
         connected: Boolean(data.connected ?? true),
         backendAvailable: true,
         products: Array.isArray(data.products) ? data.products.filter(isPublishedProduct) : [],
+        productSales: Array.isArray(data.productSales) ? data.productSales : undefined,
         categories: Array.isArray(data.categories) && data.categories.length > 0 ? data.categories : undefined,
         collections: Array.isArray(data.collections) && data.collections.length > 0 ? data.collections : undefined,
         reviews: Array.isArray(data.reviews) ? data.reviews : [],
@@ -185,6 +193,7 @@ export async function fetchPublicCatalog(): Promise<PublicCatalogResponse> {
   const [
     backendRes,
     prodRes,
+    salesRes,
     catRes,
     colRes,
     coupRes,
@@ -193,6 +202,9 @@ export async function fetchPublicCatalog(): Promise<PublicCatalogResponse> {
   ] = await Promise.allSettled([
     fetchBackendStore(),
     fetchPublishedProductsFromFirestoreServer(),
+    getDocsFromServer(collection(db, 'product_sales')).catch(() =>
+      getDocs(collection(db, 'product_sales'))
+    ),
     getDocs(collection(db, 'categories')),
     getDocs(collection(db, 'collections')),
     getDocs(collection(db, 'coupons')),
@@ -224,6 +236,19 @@ export async function fetchPublicCatalog(): Promise<PublicCatalogResponse> {
       ? 'Unable to load products. Please try again.'
       : null;
 
+  const fsSales =
+    salesRes.status === 'fulfilled'
+      ? salesRes.value.docs
+          .map((d) => d.data() as ProductSaleStat)
+          .filter((s) => s && typeof s.productId === 'string' && Number(s.unitsSold) > 0)
+      : null;
+  const apiSales = Array.isArray(backendData?.productSales)
+    ? backendData.productSales.filter((s) => s && typeof s.productId === 'string' && Number(s.unitsSold) > 0)
+    : null;
+  const effectiveSales = sortProductSalesDescending(
+    apiSales && apiSales.length > 0 ? apiSales : fsSales || []
+  );
+
   const fsCategories =
     catRes.status === 'fulfilled' && catRes.value.docs.length > 0
       ? catRes.value.docs.map((d) => d.data() as Category)
@@ -253,6 +278,7 @@ export async function fetchPublicCatalog(): Promise<PublicCatalogResponse> {
     connected: Boolean(backendData?.connected || fsProdOk),
     backendAvailable: Boolean(backendData?.backendAvailable),
     products: mergedProducts,
+    productSales: effectiveSales,
     productsError,
     categories: backendData?.categories || fsCategories,
     collections: backendData?.collections || fsCollections,
@@ -275,11 +301,13 @@ export async function fetchAdminProductsCatalog(
 ): Promise<AdminCatalogResponse> {
   interface BackendAdminCatalogPayload {
     products?: Product[];
+    productSales?: ProductSaleStat[];
     categories?: Category[];
     collections?: Collection[];
     coupons?: Coupon[];
     orders?: Order[];
     reviews?: Review[];
+    orderNotifications?: OrderNotificationRecord[];
   }
   let backendData: BackendAdminCatalogPayload | null = null;
 
@@ -359,9 +387,19 @@ export async function fetchAdminProductsCatalog(
   fsReviews.forEach((r) => reviewMap.set(r.id, r));
   (backendData?.reviews || []).forEach((r) => reviewMap.set(r.id, r));
 
+  const mergedOrders = Array.from(orderMap.values()).sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+  );
+
+  const computedSales = computeProductSalesFromOrders(mergedOrders, mergedProducts);
+
   return {
     backendAvailable: Boolean(backendData) || backendReachable,
     products: mergedProducts,
+    productSales:
+      computedSales.length > 0 || mergedOrders.length > 0
+        ? computedSales
+        : backendData?.productSales || [],
     categories:
       backendData?.categories && backendData.categories.length > 0
         ? backendData.categories
@@ -371,11 +409,12 @@ export async function fetchAdminProductsCatalog(
         ? backendData.collections
         : fsCollections,
     coupons: Array.from(couponMap.values()),
-    orders: Array.from(orderMap.values()).sort(
-      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-    ),
+    orders: mergedOrders,
     reviews: Array.from(reviewMap.values()).sort(
       (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
     ),
+    orderNotifications: Array.isArray(backendData?.orderNotifications)
+      ? backendData.orderNotifications
+      : [],
   };
 }

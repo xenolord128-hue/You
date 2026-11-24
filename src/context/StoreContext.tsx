@@ -20,18 +20,23 @@ import {
   where,
   writeBatch,
 } from 'firebase/firestore';
+import emailjs from '@emailjs/browser';
 import {
   CartItem,
   Category,
   Collection,
   Coupon,
   Order,
+  OrderNotificationRecord,
+  OrderNotificationStatus,
   OrderStatus,
   PaymentStatus,
   Product,
+  ProductSaleStat,
   Review,
   StoreSettings,
 } from '../types/ecommerce';
+import { AdminOrderNotificationTemplateParams } from '../lib/orderNotification';
 import {
   DEFAULT_CATEGORIES,
   DEFAULT_COLLECTIONS,
@@ -74,8 +79,23 @@ import {
   mergeProductsByUpdatedAt,
   verifyProductPersisted,
 } from '../services/productService';
+import {
+  buildProductSalesMap,
+  computeProductSalesFromOrders,
+  diffProductSalesForSync,
+  getBestSellingProducts,
+  sortProductSalesDescending,
+} from '../lib/salesAnalytics';
 import { setMediaSessionToken } from '../services/mediaService';
 import { apiUrl } from '../lib/api';
+
+export interface PlaceOrderNotificationMeta {
+  status: OrderNotificationStatus;
+  alreadyNotified: boolean;
+  ackToken: string;
+  messageText: string;
+  templateParams: AdminOrderNotificationTemplateParams;
+}
 
 interface StoreContextValue {
   serverConnected: boolean;
@@ -98,11 +118,15 @@ interface StoreContextValue {
   refreshAdminData: (tokenOverride?: string) => Promise<void>;
   products: Product[];
   adminProducts: Product[];
+  productSales: ProductSaleStat[];
+  productSalesById: Record<string, ProductSaleStat>;
+  bestSellers: Product[];
   categories: Category[];
   collections: Collection[];
   coupons: Coupon[];
   reviews: Review[];
   orders: Order[];
+  orderNotifications: OrderNotificationRecord[];
   settings: StoreSettings;
   cart: CartItem[];
   wishlist: string[];
@@ -140,8 +164,20 @@ interface StoreContextValue {
     orderData: Omit<
       Order,
       'id' | 'orderNumber' | 'status' | 'paymentStatus' | 'deliveryStatus' | 'createdAt'
-    > & { orderNumber?: string }
+    > & { orderNumber?: string },
+    notificationMeta?: { additionalInformation?: string }
   ) => Promise<Order>;
+  getOrderNotificationMeta: (orderId: string) => PlaceOrderNotificationMeta | undefined;
+  reportOrderNotificationResult: (
+    orderId: string,
+    orderNumber: string,
+    sent: boolean,
+    errorMessage?: string
+  ) => Promise<void>;
+  retryAdminOrderNotification: (
+    orderId: string,
+    force?: boolean
+  ) => Promise<{ ok: boolean; message: string }>;
   trackOrder: (orderNumber: string, phone: string) => Order | null;
   fetchTrackedOrder: (orderNumber: string, phone: string) => Promise<Order | null>;
   submitReview: (input: {
@@ -202,7 +238,15 @@ function writeSessionToken(token: string): void {
 function readStorage<T>(key: string, fallback: T): T {
   try {
     const raw = localStorage.getItem(key);
-    return raw ? (JSON.parse(raw) as T) : fallback;
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw) as unknown;
+    if (Array.isArray(fallback)) {
+      return (Array.isArray(parsed) ? parsed : fallback) as T;
+    }
+    if (parsed === null || typeof parsed !== typeof fallback) {
+      return fallback;
+    }
+    return parsed as T;
   } catch {
     return fallback;
   }
@@ -256,7 +300,7 @@ function clampProductForFirestore(product: Product): Product {
     reviews_count: Math.max(0, Number(product.reviews_count) || 0),
     featured: Boolean(product.featured),
     new_arrival: Boolean(product.new_arrival),
-    best_seller: Boolean(product.best_seller),
+    best_seller: false,
     trending: Boolean(product.trending),
     winter_collection: Boolean(product.winter_collection),
     sale: Boolean(product.sale),
@@ -409,19 +453,26 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
   const backendAvailableRef = useRef(false);
   const apiProductsRef = useRef<Product[]>([]);
   const fsProductsRef = useRef<Product[]>([]);
+  const fsProductSalesRef = useRef<ProductSaleStat[]>([]);
   const deletedProductIdsRef = useRef<Set<string>>(new Set());
   const apiCategoriesLoadedRef = useRef(false);
   const apiSettingsRef = useRef<Partial<StoreSettings> | undefined>(undefined);
   const productsRef = useRef<Product[]>([]);
+  const allProductsRef = useRef<Product[]>([]);
 
   useEffect(() => {
     productsRef.current = products;
   }, [products]);
 
   useEffect(() => {
+    allProductsRef.current = allProducts;
+  }, [allProducts]);
+
+  useEffect(() => {
     setMediaSessionToken(adminSessionToken);
   }, [adminSessionToken]);
 
+  const [productSales, setProductSales] = useState<ProductSaleStat[]>([]);
   const [categories, setCategories] = useState<Category[]>(DEFAULT_CATEGORIES);
   const [collections, setCollections] = useState<Collection[]>(DEFAULT_COLLECTIONS);
   const [coupons, setCoupons] = useState<Coupon[]>([]);
@@ -429,6 +480,12 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
   const [orders, setOrders] = useState<Order[]>(() =>
     readStorage<Order[]>(LOCAL_ORDERS_KEY, [])
   );
+  const [orderNotifications, setOrderNotifications] = useState<OrderNotificationRecord[]>([]);
+  const orderNotificationMetaRef = useRef<Map<string, PlaceOrderNotificationMeta>>(new Map());
+  const ordersRef = useRef<Order[]>(orders);
+  useEffect(() => {
+    ordersRef.current = orders;
+  }, [orders]);
   const [settings, setSettings] = useState<StoreSettings>(DEFAULT_SETTINGS);
 
   const [cart, setCart] = useState<CartItem[]>(() =>
@@ -628,6 +685,9 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           const normalizedProds = data.products.map(normalizeProductMedia);
           apiProductsRef.current = normalizedProds;
           setAllProducts(normalizedProds);
+          if (Array.isArray(data.productSales)) {
+            setProductSales(sortProductSalesDescending(data.productSales));
+          }
         }
         setServerConnected(data.connected);
         if (data.backendAvailable) setBackendConnected(true);
@@ -669,6 +729,9 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
             const normalizedProds = data.products.map(normalizeProductMedia);
             apiProductsRef.current = normalizedProds;
             setAllProducts(normalizedProds);
+            if (Array.isArray(data.productSales)) {
+              setProductSales(sortProductSalesDescending(data.productSales));
+            }
           }
         }
         if (Array.isArray(data.categories) && data.categories.length > 0) {
@@ -798,6 +861,22 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       () => {}
     );
 
+    const unsubProductSales = onSnapshot(
+      collection(db, 'product_sales'),
+      (snap) => {
+        const fsSales = sortProductSalesDescending(
+          snap.docs
+            .map((d) => d.data() as ProductSaleStat)
+            .filter((s) => s && typeof s.productId === 'string' && Number(s.unitsSold) > 0)
+        );
+        fsProductSalesRef.current = fsSales;
+        if (!adminLoadedRef.current) {
+          setProductSales(fsSales);
+        }
+      },
+      () => {}
+    );
+
     return () => {
       active = false;
       unsubProducts();
@@ -805,8 +884,39 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       unsubCollections();
       unsubSettings();
       unsubReviews();
+      unsubProductSales();
     };
   }, []);
+
+  const syncFirestoreProductSales = useCallback(
+    async (ordersList: Order[], catalogList: Product[]) => {
+      const nextSales = computeProductSalesFromOrders(ordersList, catalogList);
+      setProductSales(nextSales);
+      if (!isVerifiedAdminUser(auth.currentUser)) return nextSales;
+
+      const { toUpsert, toDeleteIds, hasChanges } = diffProductSalesForSync(
+        nextSales,
+        fsProductSalesRef.current
+      );
+      if (!hasChanges) return nextSales;
+
+      try {
+        const batch = writeBatch(db);
+        toUpsert.forEach((stat) => {
+          batch.set(doc(db, 'product_sales', stat.id), cleanFirestorePayload(stat));
+        });
+        toDeleteIds.forEach((pid) => {
+          batch.delete(doc(db, 'product_sales', pid));
+        });
+        await batch.commit();
+        fsProductSalesRef.current = nextSales;
+      } catch (err) {
+        console.warn('Unable to reconcile Firestore product_sales:', err);
+      }
+      return nextSales;
+    },
+    []
+  );
 
   const refreshAdminData = useCallback(
     async (tokenOverride?: string) => {
@@ -819,8 +929,10 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           backendAvailableRef.current = true;
           setBackendConnected(true);
         }
+        const normalizedProds = Array.isArray(data.products)
+          ? data.products.map(normalizeProductMedia)
+          : allProductsRef.current;
         if (Array.isArray(data.products)) {
-          const normalizedProds = data.products.map(normalizeProductMedia);
           apiProductsRef.current = normalizedProds;
           setAllProducts(normalizedProds);
         }
@@ -847,6 +959,9 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           } catch {
             // ignore
           }
+          await syncFirestoreProductSales(sorted, normalizedProds);
+        } else if (Array.isArray(data.productSales)) {
+          setProductSales(sortProductSalesDescending(data.productSales));
         }
         if (Array.isArray(data.coupons)) {
           setCoupons(data.coupons);
@@ -854,12 +969,15 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         if (Array.isArray(data.reviews)) {
           setReviews(data.reviews);
         }
+        if (Array.isArray(data.orderNotifications)) {
+          setOrderNotifications(data.orderNotifications);
+        }
         setServerConnected(true);
       } catch (err) {
         console.warn('Unable to refresh admin catalog:', err);
       }
     },
-    [isAdminAuthenticated, adminSessionToken]
+    [isAdminAuthenticated, adminSessionToken, syncFirestoreProductSales]
   );
 
   // Load full Admin catalog + orders whenever authenticated via password or Google
@@ -894,21 +1012,25 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       collection(db, 'orders'),
       (snap) => {
         const fsOrders = snap.docs.map((d) => d.data() as Order);
-        setOrders((prev) => {
-          const map = new Map<string, Order>();
-          fsOrders.forEach((o) => map.set(o.id, o));
-          prev.forEach((o) => map.set(o.id, o));
-          const sorted = Array.from(map.values()).sort(
-            (a, b) =>
-              new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-          );
-          try {
-            localStorage.setItem(LOCAL_ORDERS_KEY, JSON.stringify(sorted));
-          } catch {
-            // ignore
-          }
-          return sorted;
+        const map = new Map<string, Order>();
+        ordersRef.current.forEach((o) => {
+          if (o && typeof o.id === 'string') map.set(o.id, o);
         });
+        fsOrders.forEach((o) => {
+          if (o && typeof o.id === 'string') map.set(o.id, o);
+        });
+        const sorted = Array.from(map.values()).sort(
+          (a, b) =>
+            new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+        );
+        ordersRef.current = sorted;
+        setOrders(sorted);
+        try {
+          localStorage.setItem(LOCAL_ORDERS_KEY, JSON.stringify(sorted));
+        } catch {
+          // ignore
+        }
+        setProductSales(computeProductSalesFromOrders(sorted, allProductsRef.current));
       },
       () => {}
     );
@@ -1184,7 +1306,8 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       orderData: Omit<
         Order,
         'id' | 'orderNumber' | 'status' | 'paymentStatus' | 'deliveryStatus' | 'createdAt'
-      > & { orderNumber?: string }
+      > & { orderNumber?: string },
+      notificationMeta?: { additionalInformation?: string }
     ): Promise<Order> => {
       const orderId = sanitizeDocId(
         `ord-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`
@@ -1245,21 +1368,35 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       let savedOrder: Order = newOrder;
       let backendSaved = false;
 
+      const requestPayload = notificationMeta?.additionalInformation
+        ? {
+            ...newOrder,
+            additionalInformation: notificationMeta.additionalInformation.trim().slice(0, 500),
+          }
+        : newOrder;
+
       try {
         const res = await fetch(apiUrl('/api/orders'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(newOrder),
+          body: JSON.stringify(requestPayload),
         });
         const ct = (res.headers.get('content-type') || '').toLowerCase();
         if (ct.includes('application/json')) {
-          const data = (await res.json()) as { order?: Order; error?: string };
+          const data = (await res.json()) as {
+            order?: Order;
+            notification?: PlaceOrderNotificationMeta;
+            error?: string;
+          };
           if (!res.ok) {
             throw new Error(data.error || 'Unable to submit order.');
           }
           if (data.order) {
             savedOrder = data.order;
             backendSaved = true;
+            if (data.notification) {
+              orderNotificationMetaRef.current.set(savedOrder.id, data.notification);
+            }
           }
         }
       } catch (err) {
@@ -1303,6 +1440,182 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       return savedOrder;
     },
     [clearCart]
+  );
+
+  const getOrderNotificationMeta = useCallback((orderId: string) => {
+    return orderNotificationMetaRef.current.get(orderId);
+  }, []);
+
+  const reportOrderNotificationResult = useCallback(
+    async (
+      orderId: string,
+      orderNumber: string,
+      sent: boolean,
+      errorMessage?: string
+    ) => {
+      const meta = orderNotificationMetaRef.current.get(orderId);
+      const ackToken = meta?.ackToken || '';
+      if (!ackToken && !adminSessionToken) return;
+
+      try {
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (adminSessionToken) headers['X-Admin-Session'] = adminSessionToken;
+        const res = await fetch(
+          apiUrl(`/api/orders/${encodeURIComponent(orderId)}/notification-ack`),
+          {
+            method: 'POST',
+            credentials: 'include',
+            headers,
+            body: JSON.stringify({
+              ackToken,
+              orderNumber,
+              sent,
+              channel: 'emailjs_client',
+              ...(errorMessage ? { error: errorMessage.slice(0, 240) } : {}),
+            }),
+          }
+        );
+        const ct = (res.headers.get('content-type') || '').toLowerCase();
+        if (res.ok && ct.includes('application/json')) {
+          const data = (await res.json()) as {
+            status?: OrderNotificationStatus;
+            notification?: OrderNotificationRecord;
+          };
+          if (meta && data.status) {
+            orderNotificationMetaRef.current.set(orderId, {
+              ...meta,
+              status: data.status,
+              alreadyNotified: data.status === 'sent',
+            });
+          }
+          if (data.notification) {
+            const notif = data.notification;
+            setOrderNotifications((prev) => {
+              const exists = prev.some((n) => n.orderId === notif.orderId);
+              return exists
+                ? prev.map((n) => (n.orderId === notif.orderId ? notif : n))
+                : [notif, ...prev];
+            });
+          }
+        }
+      } catch {
+        // Non-blocking: never fail checkout if status ack cannot reach server
+      }
+    },
+    [adminSessionToken]
+  );
+
+  const retryAdminOrderNotification = useCallback(
+    async (
+      orderId: string,
+      force = false
+    ): Promise<{ ok: boolean; message: string }> => {
+      const cleanId = sanitizeDocId(orderId);
+      if (!cleanId) return { ok: false, message: 'Invalid order ID.' };
+
+      const retryRes = await adminApiCall<{
+        ok?: boolean;
+        status?: OrderNotificationStatus;
+        duplicatePrevented?: boolean;
+        requireClientEmailJs?: boolean;
+        ackToken?: string;
+        error?: string;
+        notification?: OrderNotificationRecord;
+      }>(`/api/admin/notifications/${encodeURIComponent(cleanId)}/retry`, 'POST', {
+        force,
+      });
+
+      if (!retryRes) {
+        return { ok: false, message: 'Backend notification service is unavailable.' };
+      }
+
+      if (retryRes.notification) {
+        const notif = retryRes.notification;
+        setOrderNotifications((prev) => {
+          const exists = prev.some((n) => n.orderId === notif.orderId);
+          return exists
+            ? prev.map((n) => (n.orderId === notif.orderId ? notif : n))
+            : [notif, ...prev];
+        });
+      }
+
+      if (retryRes.duplicatePrevented) {
+        return {
+          ok: true,
+          message: `Notification already delivered for ${retryRes.notification?.orderNumber || cleanId}.`,
+        };
+      }
+
+      if (!retryRes.requireClientEmailJs) {
+        return {
+          ok: Boolean(retryRes.ok),
+          message: retryRes.ok
+            ? `Admin alert sent for ${retryRes.notification?.orderNumber || cleanId}.`
+            : retryRes.error || 'Failed to send admin order alert.',
+        };
+      }
+
+      const notif = retryRes.notification;
+      if (!notif || !notif.templateParams) {
+        return { ok: false, message: 'Missing order notification payload.' };
+      }
+
+      const serviceId =
+        ((import.meta as any).env?.VITE_EMAILJS_SERVICE_ID as string | undefined) ||
+        'service_jlw1nj9';
+      const templateId =
+        ((import.meta as any).env?.VITE_EMAILJS_TEMPLATE_ID as string | undefined) ||
+        'template_ytbv3oj';
+      const publicKey =
+        ((import.meta as any).env?.VITE_EMAILJS_PUBLIC_KEY as string | undefined) ||
+        'mq7QXXen_i72fccjy';
+
+      try {
+        emailjs.init({ publicKey });
+        await emailjs.send(serviceId, templateId, notif.templateParams, { publicKey });
+        const ackRes = await adminApiCall<{
+          ok?: boolean;
+          notification?: OrderNotificationRecord;
+        }>(`/api/orders/${encodeURIComponent(cleanId)}/notification-ack`, 'POST', {
+          ackToken: retryRes.ackToken || '',
+          sent: true,
+          channel: 'emailjs_client',
+        });
+        if (ackRes?.notification) {
+          const updated = ackRes.notification;
+          setOrderNotifications((prev) =>
+            prev.map((n) => (n.orderId === updated.orderId ? updated : n))
+          );
+        }
+        return {
+          ok: true,
+          message: `Admin alert sent for ${notif.orderNumber}.`,
+        };
+      } catch (err) {
+        const errMsg =
+          err instanceof Error ? err.message : 'EmailJS retry dispatch failed.';
+        const ackRes = await adminApiCall<{
+          ok?: boolean;
+          notification?: OrderNotificationRecord;
+        }>(`/api/orders/${encodeURIComponent(cleanId)}/notification-ack`, 'POST', {
+          ackToken: retryRes.ackToken || '',
+          sent: false,
+          channel: 'emailjs_client',
+          error: errMsg,
+        }).catch(() => null);
+        if (ackRes?.notification) {
+          const updated = ackRes.notification;
+          setOrderNotifications((prev) =>
+            prev.map((n) => (n.orderId === updated.orderId ? updated : n))
+          );
+        }
+        return {
+          ok: false,
+          message: errMsg,
+        };
+      }
+    },
+    [adminApiCall]
   );
 
   const trackOrder = useCallback(
@@ -1617,6 +1930,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         name: `${product.name} (Copy)`,
         slug: `${product.slug}-copy-${suffix}`,
         status: 'Draft',
+        best_seller: false,
         created_at: nowIso,
         updated_at: nowIso,
       };
@@ -1874,11 +2188,24 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         updatedAt: new Date().toISOString(),
       });
 
-      const apiRes = await adminApiCall<{ ok?: boolean }>(
+      const nextOrdersList = orders.map((o) => (o.id === cleanId ? updatedOrder : o));
+      const nextSales = computeProductSalesFromOrders(nextOrdersList, allProducts);
+
+      const apiRes = await adminApiCall<{ ok?: boolean; productSales?: ProductSaleStat[] }>(
         `/api/admin/orders/${encodeURIComponent(cleanId)}`,
         'PATCH',
-        patch
-      );
+        { ...patch, order: existingOrder }
+      ).catch((err) => {
+        if (
+          isVerifiedAdminUser(auth.currentUser) &&
+          err instanceof Error &&
+          (err.message.toLowerCase().includes('failed to fetch') ||
+            err.message.toLowerCase().includes('order not found'))
+        ) {
+          return null;
+        }
+        throw err;
+      });
 
       const trackingId = buildTrackingDocId(
         updatedOrder.orderNumber,
@@ -1906,7 +2233,20 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           const batch = writeBatch(db);
           batch.set(doc(db, 'orders', cleanId), updatedOrder);
           batch.set(doc(db, 'order_tracking', trackingId), trackingPayload);
+
+          const { toUpsert, toDeleteIds } = diffProductSalesForSync(
+            nextSales,
+            fsProductSalesRef.current
+          );
+          toUpsert.forEach((stat) => {
+            batch.set(doc(db, 'product_sales', stat.id), cleanFirestorePayload(stat));
+          });
+          toDeleteIds.forEach((pid) => {
+            batch.delete(doc(db, 'product_sales', pid));
+          });
+
           await batch.commit();
+          fsProductSalesRef.current = nextSales;
         } catch (err) {
           if (!apiRes) {
             handleFirestoreError(err, OperationType.UPDATE, `orders/${cleanId}`);
@@ -1916,18 +2256,22 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         throw new Error('Administrator session expired. Please log in again.');
       }
 
-      setOrders((prev) => {
-        const next = prev.map((o) => (o.id === cleanId ? updatedOrder : o));
+      setOrders(() => {
         try {
-          localStorage.setItem(LOCAL_ORDERS_KEY, JSON.stringify(next));
+          localStorage.setItem(LOCAL_ORDERS_KEY, JSON.stringify(nextOrdersList));
         } catch {
           // ignore storage
         }
-        return next;
+        return nextOrdersList;
       });
+      setProductSales(
+        Array.isArray(apiRes?.productSales)
+          ? sortProductSalesDescending(apiRes.productSales)
+          : nextSales
+      );
       showToast('Order updated');
     },
-    [adminApiCall, orders, showToast]
+    [adminApiCall, allProducts, orders, showToast]
   );
 
   const updateOrderStatus = useCallback(
@@ -2046,6 +2390,16 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     showToast,
   ]);
 
+  const productSalesById = useMemo(
+    () => buildProductSalesMap(productSales),
+    [productSales]
+  );
+
+  const bestSellers = useMemo(
+    () => getBestSellingProducts(products, productSalesById),
+    [products, productSalesById]
+  );
+
   return (
     <StoreContext.Provider
       value={{
@@ -2069,11 +2423,15 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         refreshAdminData,
         products,
         adminProducts: allProducts,
+        productSales,
+        productSalesById,
+        bestSellers,
         categories,
         collections,
         coupons,
         reviews,
         orders,
+        orderNotifications,
         settings,
         cart,
         wishlist,
@@ -2102,6 +2460,9 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         removeCoupon,
         addRecentSearch,
         placeOrder,
+        getOrderNotificationMeta,
+        reportOrderNotificationResult,
+        retryAdminOrderNotification,
         trackOrder,
         fetchTrackedOrder,
         submitReview,

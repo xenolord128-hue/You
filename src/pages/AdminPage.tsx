@@ -24,6 +24,7 @@ import {
   Category,
   Collection,
   Coupon,
+  OrderNotificationRecord,
   OrderStatus,
   PaymentStatus,
   Product,
@@ -43,10 +44,15 @@ import { SeoHead } from '../components/SeoHead';
 import { AdminProductUploadForm } from '../components/AdminProductUploadForm';
 import { productCodeSearchKey } from '../lib/productCode';
 import {
+  computeProductSalesFromOrders,
+  isCountableSaleOrder,
+} from '../lib/salesAnalytics';
+import {
   countProductsInCategory,
   getSortedCategories,
   productMatchesCategory,
 } from '../lib/categoryUtils';
+import { buildAdminOrderNotification } from '../lib/orderNotification';
 
 type AdminTab =
   | 'overview'
@@ -153,7 +159,7 @@ const GUIDE_ITEMS: { title: string; text: string }[] = [
   },
   {
     title: 'Mark badges',
-    text: 'Tick New Arrival, Featured, Best Seller, Trending or Winter Collection.',
+    text: 'Tick New Arrival, Featured, Trending or Winter Collection. Best Sellers are ranked automatically from confirmed & delivered unit sales.',
   },
   {
     title: 'Adjust stock',
@@ -259,6 +265,7 @@ export const AdminPage: React.FC = () => {
     coupons,
     reviews,
     orders,
+    orderNotifications,
     settings,
     upsertProduct,
     duplicateProduct,
@@ -271,6 +278,7 @@ export const AdminPage: React.FC = () => {
     upsertCoupon,
     deleteCoupon,
     updateOrderDetails,
+    retryAdminOrderNotification,
     updateStoreSettings,
     syncCatalog,
     showToast,
@@ -287,8 +295,18 @@ export const AdminPage: React.FC = () => {
   const [isSeeding, setIsSeeding] = useState(false);
   const [linkingCloud, setLinkingCloud] = useState(false);
 
-  // Order delivery notes local edits
+  // Order delivery notes & notification retry state
   const [orderNotes, setOrderNotes] = useState<Record<string, string>>({});
+  const [retryingNotificationOrderId, setRetryingNotificationOrderId] = useState<string | null>(
+    null
+  );
+  const notificationByOrderId = useMemo(() => {
+    const map = new Map<string, OrderNotificationRecord>();
+    orderNotifications.forEach((n) => {
+      if (n && n.orderId) map.set(n.orderId, n);
+    });
+    return map;
+  }, [orderNotifications]);
 
   // Product editor & search/filter state
   const [editingProductId, setEditingProductId] = useState<string | null>(null);
@@ -470,7 +488,7 @@ export const AdminPage: React.FC = () => {
   };
 
   const analytics = useMemo(() => {
-    const validOrders = orders.filter((o) => o.status !== 'Cancelled');
+    const validOrders = orders.filter(isCountableSaleOrder);
     const totalSales = validOrders.reduce((sum, o) => sum + (Number(o.total) || 0), 0);
     const lowStockProducts = adminProducts
       .filter((p) => (p.inventory ?? 0) <= 15)
@@ -497,7 +515,7 @@ export const AdminPage: React.FC = () => {
         spent: 0,
       };
       existing.orders += 1;
-      if (o.status !== 'Cancelled') existing.spent += Number(o.total) || 0;
+      if (isCountableSaleOrder(o)) existing.spent += Number(o.total) || 0;
       customerMap.set(key, existing);
     });
 
@@ -527,25 +545,26 @@ export const AdminPage: React.FC = () => {
       color: REVENUE_SHADES[Math.min(idx, REVENUE_SHADES.length - 1)],
     }));
 
-    const productUnits = new Map<string, { name: string; units: number; rev: number }>();
-    validOrders.forEach((o) => {
-      (o.items ?? []).forEach((item) => {
-        const prev = productUnits.get(item.productId) || {
-          name: item.name,
-          units: 0,
-          rev: 0,
+    const catalogById = new Map(adminProducts.map((p) => [p.id, p]));
+    const bestSelling = computeProductSalesFromOrders(orders, adminProducts)
+      .slice(0, 10)
+      .map((stat) => {
+        const matched = catalogById.get(stat.productId);
+        const currentStatus = matched
+          ? matched.inventory <= 0 && matched.status === 'Published'
+            ? 'Out of Stock'
+            : matched.status
+          : 'Removed';
+        return {
+          productId: stat.productId,
+          sku: matched?.sku || stat.sku || '',
+          name: matched?.name || stat.productName,
+          units: stat.unitsSold,
+          rev: stat.revenue,
+          orderCount: stat.orderCount,
+          status: currentStatus,
         };
-        const qty = Number(item.quantity) || 0;
-        const unitPrice = Number(item.price) || 0;
-        prev.units += qty;
-        prev.rev += unitPrice * qty;
-        productUnits.set(item.productId, prev);
       });
-    });
-
-    const bestSelling = Array.from(productUnits.values())
-      .sort((a, b) => b.units - a.units)
-      .slice(0, 5);
 
     const reviewAvg =
       reviews.length > 0
@@ -642,7 +661,7 @@ export const AdminPage: React.FC = () => {
   if (!isAdminAuthenticated) {
     return (
       <div className="admin-console justify-center items-center p-4 sm:p-6">
-        <SeoHead title="Admin Login — PYTHOX WORLD" description="Protected Portal" />
+        <SeoHead title="Admin Login — PYTHOX WORLD" description="Protected Portal" noIndex />
         <div className="admin-card w-full max-w-md shadow-[0_20px_50px_rgba(10,10,10,0.08)] p-6 sm:p-9 space-y-6 modal-enter">
           <div className="flex items-center justify-between border-b border-[#ECECEB] pb-4">
             <div className="flex items-center gap-3">
@@ -1176,6 +1195,7 @@ export const AdminPage: React.FC = () => {
       <SeoHead
         title="Admin Dashboard — PYTHOX WORLD"
         description="PYTHOX WORLD Store Operations & Merchandising Portal"
+        noIndex
       />
 
       {/* SIDEBAR — Exact Desktop Left (248px) & Mobile Full-Width Vertical Stack */}
@@ -1345,7 +1365,7 @@ export const AdminPage: React.FC = () => {
                 <span className="font-admin-display text-[30px] font-semibold leading-none tabular-nums">
                   {formatBDT(analytics.totalSales)}
                 </span>
-                <span className="text-[12px] text-[#B5B5B4]">Cancelled orders excluded</span>
+                <span className="text-[12px] text-[#B5B5B4]">Confirmed &amp; fulfilled orders</span>
               </div>
 
               <div className="admin-card p-5 flex flex-col gap-2.5">
@@ -1390,7 +1410,7 @@ export const AdminPage: React.FC = () => {
                 <section className="admin-card p-6 flex flex-col gap-[18px]">
                   <div className="flex justify-between items-baseline gap-3">
                     <h2 className="text-[18px]">Revenue by Category</h2>
-                    <span className="admin-sub">All time, cancelled excluded</span>
+                    <span className="admin-sub">Confirmed &amp; fulfilled orders</span>
                   </div>
                   <div className="flex flex-col gap-[13px]">
                     {analytics.revByCategory.map((r) => (
@@ -1414,25 +1434,44 @@ export const AdminPage: React.FC = () => {
                 </section>
 
                 <div className="flex flex-wrap gap-[22px]">
-                  <section className="admin-card flex-[1_1_300px] min-w-0 p-6 flex flex-col gap-[14px]">
-                    <h2 className="text-[18px]">Best-Selling Products</h2>
+                  <section className="admin-card flex-[1_1_340px] min-w-0 p-6 flex flex-col gap-[14px]">
+                    <div className="flex flex-wrap items-baseline justify-between gap-2">
+                      <h2 className="text-[18px]">Best-Selling Products</h2>
+                      <span className="admin-sub">Auto-ranked by units sold</span>
+                    </div>
                     <div className="flex flex-col">
                       {analytics.bestSelling.length === 0 ? (
                         <div className="py-[11px] border-t border-[#ECECEB] text-[13px] admin-mut">
-                          No sales data yet.
+                          No confirmed or delivered sales yet. Rankings update automatically from valid orders.
                         </div>
                       ) : (
                         analytics.bestSelling.map((b, i) => (
                           <div
-                            key={`${b.name}-${i}`}
-                            className="grid grid-cols-[26px_minmax(0,1fr)_auto] gap-3 items-center py-[11px] border-t border-[#ECECEB] text-[13px]"
+                            key={`${b.productId}-${i}`}
+                            className="grid grid-cols-[28px_minmax(0,1fr)_auto] gap-3 items-center py-[11px] border-t border-[#ECECEB] text-[13px]"
                           >
-                            <span className="font-admin-display font-semibold text-[#6A6A6A]">
-                              {i + 1}
+                            <span className="font-admin-display font-semibold text-[#6A6A6A] tabular-nums">
+                              #{i + 1}
                             </span>
                             <div className="flex flex-col gap-0.5 min-w-0">
-                              <span className="font-medium truncate">{b.name}</span>
-                              <span className="admin-sub">{b.units} units sold</span>
+                              <div className="flex items-center gap-2 min-w-0">
+                                <span className="font-medium truncate">{b.name}</span>
+                                <span
+                                  className="admin-pill shrink-0 !text-[10px] !py-0.5 !px-2"
+                                  style={
+                                    b.status === 'Removed'
+                                      ? { backgroundColor: '#F3F2EE', color: '#5C5C5C', borderColor: '#D4D4D3' }
+                                      : getPillStyle(b.status)
+                                  }
+                                >
+                                  {b.status}
+                                </span>
+                              </div>
+                              <span className="admin-sub">
+                                {b.units} {b.units === 1 ? 'unit' : 'units'} sold · {b.orderCount}{' '}
+                                {b.orderCount === 1 ? 'order' : 'orders'}
+                                {b.sku ? ` · ${b.sku}` : ''}
+                              </span>
                             </div>
                             <span className="tabular-nums font-medium">{formatBDT(b.rev)}</span>
                           </div>
@@ -2083,22 +2122,95 @@ export const AdminPage: React.FC = () => {
                             }}
                           />
                         </div>
-                        <button
-                          type="button"
-                          className="admin-btn admin-btn-sm"
-                          onClick={() =>
-                            void handleCopyDispatchSlip(
-                              o.orderNumber,
-                              o.customerName,
-                              o.customerPhone,
-                              `${o.address}, ${o.area}, ${o.city}`,
-                              o.total,
-                              o.status
-                            )
-                          }
-                        >
-                          Copy Slip
-                        </button>
+                        <div className="flex flex-col gap-1.5 items-start">
+                          <button
+                            type="button"
+                            className="admin-btn admin-btn-sm"
+                            onClick={() =>
+                              void handleCopyDispatchSlip(
+                                o.orderNumber,
+                                o.customerName,
+                                o.customerPhone,
+                                `${o.address}, ${o.area}, ${o.city}`,
+                                o.total,
+                                o.status
+                              )
+                            }
+                          >
+                            Copy Slip
+                          </button>
+                          {(() => {
+                            const notif = notificationByOrderId.get(o.id);
+                            const statusLabel =
+                              notif?.status === 'sent'
+                                ? 'Alert Sent'
+                                : notif?.status === 'failed'
+                                ? 'Alert Failed'
+                                : 'Alert Pending';
+                            const isRetrying = retryingNotificationOrderId === o.id;
+                            return (
+                              <>
+                                <span
+                                  className="admin-sub text-[10.5px] font-medium"
+                                  title={notif?.lastError || statusLabel}
+                                >
+                                  {statusLabel}
+                                  {notif?.attempts ? ` (${notif.attempts})` : ''}
+                                </span>
+                                <button
+                                  type="button"
+                                  className="admin-btn admin-btn-sm"
+                                  disabled={isRetrying}
+                                  onClick={async () => {
+                                    setRetryingNotificationOrderId(o.id);
+                                    try {
+                                      const res = await retryAdminOrderNotification(
+                                        o.id,
+                                        notif?.status === 'sent'
+                                      );
+                                      showToast(res.message);
+                                    } finally {
+                                      setRetryingNotificationOrderId(null);
+                                    }
+                                  }}
+                                >
+                                  {isRetrying
+                                    ? 'Sending...'
+                                    : notif?.status === 'sent'
+                                    ? 'Resend Alert'
+                                    : 'Retry Alert'}
+                                </button>
+                                <button
+                                  type="button"
+                                  className="admin-btn admin-btn-sm"
+                                  onClick={async () => {
+                                    const built = buildAdminOrderNotification(o, {
+                                      products: adminProducts,
+                                      publicOrigin:
+                                        typeof window !== 'undefined'
+                                          ? window.location.origin
+                                          : undefined,
+                                      additionalInformation:
+                                        notif?.templateParams?.additional_information &&
+                                        notif.templateParams.additional_information !== 'N/A'
+                                          ? notif.templateParams.additional_information
+                                          : undefined,
+                                      storeName: 'PYTHOX WORLD',
+                                    });
+                                    try {
+                                      await navigator.clipboard.writeText(built.messageText);
+                                      showToast(`Full alert copied for ${o.orderNumber}`);
+                                    } catch {
+                                      showToast('Unable to copy notification message');
+                                    }
+                                  }}
+                                >
+                                  Copy Alert
+                                </button>
+                              </>
+                            );
+                          })()}
+                        </div>
                       </div>
                     );
                   })

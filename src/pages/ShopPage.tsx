@@ -63,7 +63,14 @@ const MODE_COPY: Record<ShopMode, { title: string; eyebrow: string; desc: string
 };
 
 export const ShopPage: React.FC<ShopPageProps> = ({ mode = 'all' }) => {
-  const { products, categories, productsLoading, productsError, refreshProducts } = useStore();
+  const {
+    products,
+    productSalesById,
+    categories,
+    productsLoading,
+    productsError,
+    refreshProducts,
+  } = useStore();
   const { categorySlug } = useParams<{ categorySlug?: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
@@ -88,8 +95,12 @@ export const ShopPage: React.FC<ShopPageProps> = ({ mode = 'all' }) => {
   const [discountOnly, setDiscountOnly] = useState(false);
   const [sortBy, setSortBy] = useState<
     'featured' | 'newest' | 'best-selling' | 'price-asc' | 'price-desc' | 'rating'
-  >('featured');
+  >(mode === 'best-sellers' ? 'best-selling' : 'featured');
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
+
+  useEffect(() => {
+    setSortBy(mode === 'best-sellers' ? 'best-selling' : 'featured');
+  }, [mode]);
 
   // Sync URL route slug (/category/:categorySlug) or query params (?category=, ?subcategory=, ?q=)
   useEffect(() => {
@@ -120,7 +131,9 @@ export const ShopPage: React.FC<ShopPageProps> = ({ mode = 'all' }) => {
   const modeFilteredProducts = useMemo(() => {
     return products.filter((p) => {
       if (mode === 'new' && !p.new_arrival) return false;
-      if (mode === 'best-sellers' && !p.best_seller) return false;
+      if (mode === 'best-sellers' && (productSalesById[p.id]?.unitsSold ?? 0) <= 0) {
+        return false;
+      }
       if (mode === 'trending' && !p.trending) return false;
       if (mode === 'winter' && !p.winter_collection) return false;
       if (
@@ -132,7 +145,7 @@ export const ShopPage: React.FC<ShopPageProps> = ({ mode = 'all' }) => {
       }
       return true;
     });
-  }, [products, mode]);
+  }, [products, mode, productSalesById]);
 
   // Active Category record (matched by slug, id, name, or filterCategory alias)
   const activeCategoryRecord = useMemo(() => {
@@ -284,8 +297,15 @@ export const ShopPage: React.FC<ShopPageProps> = ({ mode = 'all' }) => {
       switch (sortBy) {
         case 'newest':
           return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
-        case 'best-selling':
-          return Number(b.best_seller) - Number(a.best_seller) || b.reviews_count - a.reviews_count;
+        case 'best-selling': {
+          const sa = productSalesById[a.id];
+          const sb = productSalesById[b.id];
+          const unitsDiff = (sb?.unitsSold ?? 0) - (sa?.unitsSold ?? 0);
+          if (unitsDiff !== 0) return unitsDiff;
+          const revDiff = (sb?.revenue ?? 0) - (sa?.revenue ?? 0);
+          if (revDiff !== 0) return revDiff;
+          return b.reviews_count - a.reviews_count;
+        }
         case 'price-asc':
           return a.price - b.price;
         case 'price-desc':
@@ -307,6 +327,7 @@ export const ShopPage: React.FC<ShopPageProps> = ({ mode = 'all' }) => {
     discountOnly,
     searchText,
     sortBy,
+    productSalesById,
   ]);
 
   const resetFilters = () => {
@@ -937,6 +958,8 @@ export const ShopPage: React.FC<ShopPageProps> = ({ mode = 'all' }) => {
               <p className="text-xl font-editorial font-medium text-[#0A0A0A]">
                 {products.length === 0
                   ? 'No products are publicly available.'
+                  : mode === 'best-sellers' && modeFilteredProducts.length === 0
+                  ? 'No verified sales recorded yet.'
                   : activeCategoryRecord && categoryScopedProducts.length === 0
                   ? `New ${activeCategoryRecord.name} pieces arriving soon.`
                   : 'No matching pieces found.'}
@@ -944,6 +967,8 @@ export const ShopPage: React.FC<ShopPageProps> = ({ mode = 'all' }) => {
               <p className="text-xs text-[#5C5C5C] max-w-md mx-auto leading-relaxed">
                 {products.length === 0
                   ? 'Published menswear items from the Admin Console will appear here automatically.'
+                  : mode === 'best-sellers' && modeFilteredProducts.length === 0
+                  ? 'Best Sellers update automatically as customer orders are confirmed and delivered.'
                   : activeCategoryRecord && categoryScopedProducts.length === 0
                   ? activeCategoryRecord.description
                   : 'Try clearing a subcategory, size, or price filter to explore more silhouettes.'}

@@ -22,16 +22,16 @@ export const BRAND_LOCATION =
   'Savar Thana Road, Ciramix Bazar, 121/5, Savar, Dhaka';
 
 export const HERO_CAMPAIGN_URL =
-  'https://i.ibb.co.com/fzt4JD6z/file-0000000043b4820bb5c589a43b57a1e6.png';
+  'https://i.ibb.co.com/vxpcvRcm/file-00000000280c8230b404530156246db1.png';
 
 export const HERO_CAMPAIGN_FALLBACK_URL =
-  'https://i.ibb.co/fzt4JD6z/file-0000000043b4820bb5c589a43b57a1e6.png';
+  'https://i.ibb.co/vxpcvRcm/file-00000000280c8230b404530156246db1.png';
 
 export const MOBILE_HERO_CAMPAIGN_URL =
-  'https://i.ibb.co.com/tMWQRDs0/file-00000000e2f4820a9a500b31d1ca9fb2.png';
+  'https://i.ibb.co.com/Qv5bvhGW/file-00000000a24c821295a55f6b9125040a.png';
 
 export const MOBILE_HERO_CAMPAIGN_FALLBACK_URL =
-  'https://i.ibb.co/tMWQRDs0/file-00000000e2f4820a9a500b31d1ca9fb2.png';
+  'https://i.ibb.co/Qv5bvhGW/file-00000000a24c821295a55f6b9125040a.png';
 
 const BUNDLED_ASSET_MAP: Record<string, string> = {
   'mens_hero_campaign_1794997537605.jpg': mensHeroCampaignImg,

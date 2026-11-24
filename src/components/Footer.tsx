@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
-import { Link } from 'react-router-dom';
-import { Instagram, Lock, Mail, MapPin, MessageCircle, PhoneCall, Share2 } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import { Instagram, Mail, MapPin, MessageCircle, PhoneCall, Share2 } from 'lucide-react';
 import { useStore } from '../context/StoreContext';
 import { BRAND_LOGO_URL } from '../config/storeConfig';
 import { trackPixelEvent } from '../lib/metaPixel';
@@ -8,8 +8,36 @@ import { sanitizeExternalHref } from '../lib/formatters';
 
 export const Footer: React.FC = () => {
   const { settings, showToast, t } = useStore();
+  const navigate = useNavigate();
   const [email, setEmail] = useState('');
   const [subscribed, setSubscribed] = useState(false);
+  const accessTapCountRef = useRef(0);
+  const accessTapTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (accessTapTimerRef.current) {
+        window.clearTimeout(accessTapTimerRef.current);
+      }
+    };
+  }, []);
+
+  const handleCopyrightTap = () => {
+    accessTapCountRef.current += 1;
+    if (accessTapTimerRef.current) {
+      window.clearTimeout(accessTapTimerRef.current);
+    }
+    if (accessTapCountRef.current >= 5) {
+      accessTapCountRef.current = 0;
+      accessTapTimerRef.current = null;
+      navigate('/admin');
+      return;
+    }
+    accessTapTimerRef.current = window.setTimeout(() => {
+      accessTapCountRef.current = 0;
+      accessTapTimerRef.current = null;
+    }, 1800);
+  };
 
   const handleSubscribe = (e: React.FormEvent) => {
     e.preventDefault();
@@ -187,15 +215,8 @@ export const Footer: React.FC = () => {
 
         {/* Bottom Bar */}
         <div className="mt-10 pt-7 border-t border-[#292929] flex flex-col sm:flex-row items-center justify-between gap-4">
-          <p className="text-xs text-[#A8A39B] flex items-center gap-2 text-center sm:text-left">
-            <span>© 2026 PYTHOX WORLD · {settings.businessAddress}</span>
-            <Link
-              to="/admin"
-              aria-label="Portal"
-              className="inline-flex items-center justify-center text-[#555555] hover:text-[#A8A39B] opacity-60 hover:opacity-100 transition-opacity duration-200"
-            >
-              <Lock className="h-3 w-3" strokeWidth={1.6} />
-            </Link>
+          <p className="text-xs text-[#A8A39B] text-center sm:text-left select-none">
+            <span onClick={handleCopyrightTap}>© 2026</span> PYTHOX WORLD · {settings.businessAddress}
           </p>
           <nav
             aria-label="Footer Navigation"

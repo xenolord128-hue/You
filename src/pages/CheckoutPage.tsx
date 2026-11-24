@@ -42,10 +42,17 @@ import {
 } from '../components/CheckoutStepper';
 import { trackPixelEvent } from '../lib/metaPixel';
 import { handleCloudMediaImageError } from '../lib/cloudMediaFallback';
+import { buildAdminOrderNotification } from '../lib/orderNotification';
 
-const EMAILJS_SERVICE_ID = 'service_jlw1nj9';
-const EMAILJS_TEMPLATE_ID = 'template_ytbv3oj';
-const EMAILJS_PUBLIC_KEY = 'mq7QXXen_i72fccjy';
+const EMAILJS_SERVICE_ID =
+  ((import.meta as any).env?.VITE_EMAILJS_SERVICE_ID as string | undefined) ||
+  'service_jlw1nj9';
+const EMAILJS_TEMPLATE_ID =
+  ((import.meta as any).env?.VITE_EMAILJS_TEMPLATE_ID as string | undefined) ||
+  'template_ytbv3oj';
+const EMAILJS_PUBLIC_KEY =
+  ((import.meta as any).env?.VITE_EMAILJS_PUBLIC_KEY as string | undefined) ||
+  'mq7QXXen_i72fccjy';
 const CHECKOUT_DRAFT_KEY = 'pythox_checkout_draft_v1';
 const ORDER_PIN_STORAGE_KEY = 'pythox_order_pin_v1';
 
@@ -211,12 +218,15 @@ export const CheckoutPage: React.FC = () => {
     settings,
     appliedCoupon,
     placeOrder,
+    getOrderNotificationMeta,
+    reportOrderNotificationResult,
     updateCartQuantity,
     applyCouponCode,
     removeCoupon,
     showToast,
   } = useStore();
 
+  const sentNotificationOrderIdsRef = useRef<Set<string>>(new Set());
   const [searchParams, setSearchParams] = useSearchParams();
   const initialDraft = useMemo(() => readCheckoutDraft(), []);
 
@@ -295,7 +305,6 @@ export const CheckoutPage: React.FC = () => {
   const [paymentSenderNumber, setPaymentSenderNumber] = useState(
     initialDraft.paymentSenderNumber ?? ''
   );
-  const paymentStatus = 'Pending';
 
   // 5. Additional Info & Promo
   const [additionalInformation, setAdditionalInformation] = useState(
@@ -914,15 +923,6 @@ export const CheckoutPage: React.FC = () => {
       return;
     }
 
-    const generatedOrderDate = new Date().toLocaleString('en-US', {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-    const generatedOrderStatus = 'Pending';
-
     const cleanCustomerName = sanitizeInput(customerName, 120);
     const cleanCustomerEmail = sanitizeInput(customerEmail, 160);
     const cleanCustomerPhone = sanitizeInput(customerPhone, 20);
@@ -931,7 +931,6 @@ export const CheckoutPage: React.FC = () => {
     const cleanArea = sanitizeInput(area, 80);
     const cleanPostalCode = sanitizeInput(postalCode, 10) || '0000';
     const rawDeliveryNote = sanitizeInput(deliveryNote, 400);
-    const cleanDeliveryNote = rawDeliveryNote || 'None';
     const isDigitalPayment =
       paymentMethod === 'bKash' || paymentMethod === 'Nagad';
     const cleanTrxId = isDigitalPayment
@@ -940,8 +939,7 @@ export const CheckoutPage: React.FC = () => {
     const cleanSenderPhone = isDigitalPayment
       ? sanitizeInput(paymentSenderNumber, 20)
       : '';
-    const cleanAdditionalInfo =
-      sanitizeInput(additionalInformation, 500) || 'None';
+    const rawAdditionalInfo = sanitizeInput(additionalInformation, 500);
 
     const expectedDelivery =
       deliveryMethod === 'Express Delivery'
@@ -954,26 +952,31 @@ export const CheckoutPage: React.FC = () => {
 
     setIsSubmitting(true);
     try {
-      const savedOrder = await placeOrder({
-        customerName: cleanCustomerName,
-        customerEmail: cleanCustomerEmail,
-        customerPhone: cleanCustomerPhone,
-        address: cleanDeliveryAddress,
-        city: cleanCity,
-        area: cleanArea,
-        postalCode: cleanPostalCode,
-        deliveryMethod,
-        deliveryNote: rawDeliveryNote || undefined,
-        paymentMethod,
-        paymentReference: isDigitalPayment ? cleanTrxId : undefined,
-        paymentSenderNumber: isDigitalPayment ? cleanSenderPhone : undefined,
-        items: orderItems,
-        subtotal,
-        shipping: deliveryCharge,
-        discount,
-        couponCode: appliedCoupon?.code,
-        total: totalAmount,
-      });
+      const savedOrder = await placeOrder(
+        {
+          customerName: cleanCustomerName,
+          customerEmail: cleanCustomerEmail,
+          customerPhone: cleanCustomerPhone,
+          address: cleanDeliveryAddress,
+          city: cleanCity,
+          area: cleanArea,
+          postalCode: cleanPostalCode,
+          deliveryMethod,
+          deliveryNote: rawDeliveryNote || undefined,
+          paymentMethod,
+          paymentReference: isDigitalPayment ? cleanTrxId : undefined,
+          paymentSenderNumber: isDigitalPayment ? cleanSenderPhone : undefined,
+          items: orderItems,
+          subtotal,
+          shipping: deliveryCharge,
+          discount,
+          couponCode: appliedCoupon?.code,
+          total: totalAmount,
+        },
+        rawAdditionalInfo
+          ? { additionalInformation: rawAdditionalInfo }
+          : undefined
+      );
 
       const authoritativeOrderId = savedOrder.orderNumber;
       const authoritativeSubtotal = savedOrder.subtotal;
@@ -982,44 +985,49 @@ export const CheckoutPage: React.FC = () => {
       const authoritativeTotal = savedOrder.total;
       const authoritativeItems = savedOrder.items;
 
-      const templateParams = {
-        order_id: authoritativeOrderId,
-        order_date: generatedOrderDate,
-        order_status: generatedOrderStatus,
-        customer_name: cleanCustomerName,
-        customer_email: cleanCustomerEmail || 'Not provided',
-        customer_phone: cleanCustomerPhone,
-        delivery_address: `${cleanDeliveryAddress}, ${cleanArea}`,
-        city: cleanCity,
-        postal_code: cleanPostalCode,
-        delivery_note: cleanDeliveryNote,
-        product_name: resolvedProductInfo.product_name,
-        product_id: resolvedProductInfo.product_id,
-        size: resolvedProductInfo.size,
-        color: resolvedProductInfo.color,
-        quantity: resolvedProductInfo.quantity,
-        price: resolvedProductInfo.price,
-        payment_method: paymentMethod,
-        transaction_id: isDigitalPayment
-          ? `${cleanTrxId} (Sender: ${cleanSenderPhone})`
-          : 'N/A (Cash on Delivery)',
-        payment_status: paymentStatus,
-        subtotal: authoritativeSubtotal,
-        delivery_charge: authoritativeShipping,
-        discount: authoritativeDiscount,
-        total_amount: authoritativeTotal,
-        additional_information: cleanAdditionalInfo,
-      };
+      const builtNotification = buildAdminOrderNotification(savedOrder, {
+        products,
+        publicOrigin:
+          typeof window !== 'undefined' ? window.location.origin : undefined,
+        additionalInformation: rawAdditionalInfo || undefined,
+        storeName: 'PYTHOX WORLD',
+      });
 
-      try {
-        await emailjs.send(
-          EMAILJS_SERVICE_ID,
-          EMAILJS_TEMPLATE_ID,
-          templateParams,
-          { publicKey: EMAILJS_PUBLIC_KEY }
-        );
-      } catch (emailErr) {
-        console.warn('EmailJS dispatch skipped or deferred:', emailErr);
+      const serverNotificationMeta = getOrderNotificationMeta(savedOrder.id);
+      const templateParams =
+        serverNotificationMeta?.templateParams ||
+        builtNotification.templateParams;
+
+      if (
+        !serverNotificationMeta?.alreadyNotified &&
+        !sentNotificationOrderIdsRef.current.has(savedOrder.id)
+      ) {
+        sentNotificationOrderIdsRef.current.add(savedOrder.id);
+        try {
+          await emailjs.send(
+            EMAILJS_SERVICE_ID,
+            EMAILJS_TEMPLATE_ID,
+            templateParams as unknown as Record<string, unknown>,
+            { publicKey: EMAILJS_PUBLIC_KEY }
+          );
+          await reportOrderNotificationResult(
+            savedOrder.id,
+            savedOrder.orderNumber,
+            true
+          );
+        } catch (emailErr) {
+          const errMsg =
+            emailErr instanceof Error
+              ? emailErr.message
+              : 'EmailJS notification failed.';
+          console.warn('Admin order email dispatch failed safely:', errMsg);
+          await reportOrderNotificationResult(
+            savedOrder.id,
+            savedOrder.orderNumber,
+            false,
+            errMsg
+          );
+        }
       }
 
       try {
@@ -1043,8 +1051,8 @@ export const CheckoutPage: React.FC = () => {
 
       setConfirmedOrder({
         order_id: authoritativeOrderId,
-        order_date: generatedOrderDate,
-        order_status: generatedOrderStatus,
+        order_date: builtNotification.templateParams.order_date,
+        order_status: savedOrder.status || 'Order Received',
         customer_name: cleanCustomerName,
         customer_email: cleanCustomerEmail,
         customer_phone: cleanCustomerPhone,

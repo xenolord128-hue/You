@@ -15,6 +15,16 @@ import {
   validateCollectionName,
   validateRecordId,
 } from './server/mysql';
+import {
+  computeProductSalesFromOrders,
+  diffProductSalesForSync,
+  getBestSellingProducts,
+  ProductSaleStat,
+} from './src/lib/salesAnalytics';
+import {
+  buildAdminOrderNotification,
+  resolvePublicStoreOrigin,
+} from './src/lib/orderNotification';
 
 dotenv.config();
 
@@ -190,6 +200,8 @@ interface PersistedStore {
   coupons?: StoreRecord[];
   reviews?: StoreRecord[];
   orders?: StoreRecord[];
+  orderNotifications?: StoreRecord[];
+  productSales?: ProductSaleStat[];
   settings?: Record<string, unknown>;
   adminAuth?: PersistedAdminAuth;
 }
@@ -447,10 +459,44 @@ async function deleteFirestoreDoc(
   }
 }
 
+async function syncProductSalesToFirestore(
+  nextSales: ProductSaleStat[],
+  firebaseToken: string,
+  existingRemoteSales?: ProductSaleStat[]
+): Promise<void> {
+  if (!firebaseToken) return;
+  let remote = existingRemoteSales;
+  if (!remote) {
+    try {
+      remote = (await listFirestoreCollection('product_sales', firebaseToken)) as unknown as ProductSaleStat[];
+    } catch {
+      remote = [];
+    }
+  }
+  const { toUpsert, toDeleteIds, hasChanges } = diffProductSalesForSync(nextSales, remote);
+  if (!hasChanges) return;
+
+  await Promise.allSettled([
+    ...toUpsert.map((stat) =>
+      upsertFirestoreDoc('product_sales', stat.id, stat as unknown as Record<string, unknown>, firebaseToken)
+    ),
+    ...toDeleteIds.map((pid) => deleteFirestoreDoc('product_sales', pid, firebaseToken)),
+  ]);
+}
+
+function getEffectiveProductSales(store: PersistedStore): ProductSaleStat[] {
+  const storedOrders = Array.isArray(store.orders) ? store.orders : [];
+  const storedProducts = Array.isArray(store.products) ? store.products : [];
+  if (storedOrders.length > 0) {
+    return computeProductSalesFromOrders(storedOrders, storedProducts);
+  }
+  return Array.isArray(store.productSales) ? store.productSales : [];
+}
+
 async function hydrateStoreFromFirestore(forceAdmin = false, firebaseIdToken?: string): Promise<void> {
   const current = storeCache || {};
   try {
-    const [prodRes, catRes, colRes, revRes, setRes] = await Promise.allSettled([
+    const [prodRes, catRes, colRes, revRes, setRes, salesRes] = await Promise.allSettled([
       forceAdmin && firebaseIdToken
         ? listFirestoreCollection('products', firebaseIdToken)
         : runFirestorePublishedProductsQuery(firebaseIdToken),
@@ -458,6 +504,7 @@ async function hydrateStoreFromFirestore(forceAdmin = false, firebaseIdToken?: s
       listFirestoreCollection('collections', firebaseIdToken),
       listFirestoreCollection('reviews', firebaseIdToken),
       getFirestoreDoc('settings', 'store_config', firebaseIdToken),
+      listFirestoreCollection('product_sales', firebaseIdToken),
     ]);
 
     if (prodRes.status === 'fulfilled') {
@@ -500,6 +547,17 @@ async function hydrateStoreFromFirestore(forceAdmin = false, firebaseIdToken?: s
       current.settings = { ...(current.settings || {}), ...setRes.value };
     }
 
+    const remoteSales =
+      salesRes.status === 'fulfilled'
+        ? (salesRes.value as unknown as ProductSaleStat[]).filter(
+            (s) => s && typeof s.productId === 'string' && Number(s.unitsSold) > 0
+          )
+        : null;
+
+    if (remoteSales && (!Array.isArray(current.orders) || current.orders.length === 0)) {
+      current.productSales = remoteSales;
+    }
+
     if (forceAdmin && firebaseIdToken) {
       const [ordRes, coupRes] = await Promise.allSettled([
         listFirestoreCollection('orders', firebaseIdToken),
@@ -514,10 +572,19 @@ async function hydrateStoreFromFirestore(forceAdmin = false, firebaseIdToken?: s
           if (o && typeof o.id === 'string') ordMap.set(o.id, o);
         }
         current.orders = Array.from(ordMap.values());
+        const computedSales = computeProductSalesFromOrders(current.orders, current.products || []);
+        current.productSales = computedSales;
+        await syncProductSalesToFirestore(
+          computedSales,
+          firebaseIdToken,
+          remoteSales || undefined
+        ).catch(() => {});
       }
       if (coupRes.status === 'fulfilled' && coupRes.value.length > 0) {
         current.coupons = coupRes.value;
       }
+    } else if (Array.isArray(current.orders) && current.orders.length > 0) {
+      current.productSales = computeProductSalesFromOrders(current.orders, current.products || []);
     }
 
     storeCache = current;
@@ -903,6 +970,173 @@ async function isAdminRequestAuthenticated(req: Request): Promise<boolean> {
     return isSameOriginMutation(req);
   }
   return true;
+}
+
+const notificationInFlight = new Set<string>();
+
+function signNotificationAckToken(orderId: string, orderNumber: string): string {
+  const payload = `${orderId}:${orderNumber}`;
+  return crypto
+    .createHmac('sha256', SESSION_SECRET)
+    .update(payload)
+    .digest('base64url');
+}
+
+function verifyNotificationAckToken(
+  token: unknown,
+  orderId: string,
+  orderNumber: string
+): boolean {
+  if (typeof token !== 'string' || !token) return false;
+  const expected = signNotificationAckToken(orderId, orderNumber);
+  const a = Buffer.from(token, 'utf8');
+  const b = Buffer.from(expected, 'utf8');
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
+function resolveRequestPublicOrigin(req: Request): string {
+  const envUrl = (process.env.APP_URL || '').trim();
+  if (envUrl && envUrl !== 'MY_APP_URL') {
+    const normalized = normalizeOrigin(envUrl);
+    if (normalized) return resolvePublicStoreOrigin(normalized);
+  }
+  const reqOrigin = req.get('origin');
+  if (reqOrigin) {
+    const normalized = normalizeOrigin(reqOrigin);
+    if (normalized) return resolvePublicStoreOrigin(normalized);
+  }
+  const rawHost = req.get('x-forwarded-host') || req.get('host') || '';
+  const host = rawHost.split(',')[0]?.trim() || '';
+  if (host && /^[a-z0-9.-]+(:\d+)?$/i.test(host)) {
+    const protoHeader = String(req.headers['x-forwarded-proto'] || '').toLowerCase();
+    const proto = req.secure || protoHeader.includes('https') ? 'https' : 'http';
+    return resolvePublicStoreOrigin(`${proto}://${host}`);
+  }
+  return resolvePublicStoreOrigin(undefined);
+}
+
+function sanitizeNotificationError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err || 'Notification delivery failed.');
+  return raw.replace(/https?:\/\/\S+/gi, '[redacted-url]').slice(0, 240);
+}
+
+async function dispatchServerAdminOrderNotification(record: {
+  orderId: string;
+  orderNumber: string;
+  messageText: string;
+  templateParams: Record<string, string>;
+}): Promise<{
+  attempted: boolean;
+  sent: boolean;
+  channel: 'emailjs_server' | 'resend' | 'webhook' | 'none';
+  error?: string;
+}> {
+  const webhookUrl = (process.env.ADMIN_ORDER_WEBHOOK_URL || '').trim();
+  const resendApiKey = (process.env.RESEND_API_KEY || '').trim();
+  const adminEmail = (process.env.ADMIN_NOTIFICATION_EMAIL || '').trim();
+  const emailJsPrivateKey = (process.env.EMAILJS_PRIVATE_KEY || '').trim();
+  const emailJsServiceId = (process.env.VITE_EMAILJS_SERVICE_ID || 'service_jlw1nj9').trim();
+  const emailJsTemplateId = (process.env.VITE_EMAILJS_TEMPLATE_ID || 'template_ytbv3oj').trim();
+  const emailJsPublicKey = (process.env.VITE_EMAILJS_PUBLIC_KEY || 'mq7QXXen_i72fccjy').trim();
+
+  const errors: string[] = [];
+  let attempted = false;
+
+  if (webhookUrl && isSafeHttpUrl(webhookUrl)) {
+    attempted = true;
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 8000);
+      const webhookRes = await fetch(webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          event: 'order.received',
+          orderId: record.orderId,
+          orderNumber: record.orderNumber,
+          messageText: record.messageText,
+          templateParams: record.templateParams,
+        }),
+        signal: controller.signal,
+      }).finally(() => clearTimeout(timeout));
+      if (webhookRes.ok) {
+        return { attempted: true, sent: true, channel: 'webhook' };
+      }
+      errors.push(`Webhook returned HTTP ${webhookRes.status}`);
+    } catch (err) {
+      errors.push(sanitizeNotificationError(err));
+    }
+  }
+
+  if (resendApiKey && adminEmail) {
+    attempted = true;
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 8000);
+      const resendRes = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${resendApiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          from: 'PYTHOX WORLD Orders <onboarding@resend.dev>',
+          to: [adminEmail],
+          subject: `🛍️ NEW ORDER RECEIVED — ${record.orderNumber}`,
+          text: record.messageText,
+        }),
+        signal: controller.signal,
+      }).finally(() => clearTimeout(timeout));
+      if (resendRes.ok) {
+        return { attempted: true, sent: true, channel: 'resend' };
+      }
+      errors.push(`Resend returned HTTP ${resendRes.status}`);
+    } catch (err) {
+      errors.push(sanitizeNotificationError(err));
+    }
+  }
+
+  if (emailJsPrivateKey && emailJsServiceId && emailJsTemplateId && emailJsPublicKey) {
+    attempted = true;
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 8000);
+      const ejRes = await fetch('https://api.emailjs.com/api/v1.0/email/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          service_id: emailJsServiceId,
+          template_id: emailJsTemplateId,
+          user_id: emailJsPublicKey,
+          accessToken: emailJsPrivateKey,
+          template_params: record.templateParams,
+        }),
+        signal: controller.signal,
+      }).finally(() => clearTimeout(timeout));
+      if (ejRes.ok) {
+        return { attempted: true, sent: true, channel: 'emailjs_server' };
+      }
+      errors.push(`EmailJS server dispatch returned HTTP ${ejRes.status}`);
+    } catch (err) {
+      errors.push(sanitizeNotificationError(err));
+    }
+  }
+
+  if (!attempted) {
+    return { attempted: false, sent: false, channel: 'none' };
+  }
+
+  return {
+    attempted: true,
+    sent: false,
+    channel: emailJsPrivateKey
+      ? 'emailjs_server'
+      : resendApiKey
+      ? 'resend'
+      : 'webhook',
+    error: errors.join('; ') || 'Server order notification dispatch failed.',
+  };
 }
 
 function setAdminSessionCookie(req: Request, res: Response, token: string) {
@@ -1473,13 +1707,48 @@ async function startServer() {
     const publishedProducts = allStoredProducts.filter(
       (p) => p.status === 'Published'
     );
+    const productSales = getEffectiveProductSales(store);
     res.json({
       connected: true,
       products: publishedProducts,
+      productSales,
       categories: store.categories,
       collections: store.collections,
       reviews: Array.isArray(store.reviews) ? store.reviews : [],
       settings: store.settings,
+    });
+  });
+
+  // Public Dynamic Best Sellers Endpoint (computed strictly from confirmed & fulfilled order units sold)
+  app.get('/api/best-sellers', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const store = await loadStore();
+    const allStoredProducts = Array.isArray(store.products) ? store.products : [];
+    if (allStoredProducts.length === 0 && lastFirestoreHydrationError) {
+      return res.status(503).json({
+        connected: false,
+        error: 'Unable to load products. Please try again.',
+      });
+    }
+    const publishedProducts = allStoredProducts.filter(
+      (p) => p.status === 'Published'
+    );
+    const productSales = getEffectiveProductSales(store);
+    const limitParam = Number(req.query.limit);
+    const limit =
+      Number.isFinite(limitParam) && limitParam > 0
+        ? Math.min(100, Math.floor(limitParam))
+        : undefined;
+    const rankedProducts = getBestSellingProducts(
+      publishedProducts as (StoreRecord & { id: string; status?: string; reviews_count?: number })[],
+      productSales,
+      limit
+    );
+    res.json({
+      connected: true,
+      count: rankedProducts.length,
+      products: rankedProducts,
+      productSales,
     });
   });
 
@@ -1870,14 +2139,108 @@ async function startServer() {
       'deduct'
     );
 
+    const rawAdditionalInfo =
+      typeof body.additionalInformation === 'string'
+        ? body.additionalInformation.trim().slice(0, 500)
+        : '';
+    const publicOrigin = resolveRequestPublicOrigin(req);
+
+    const builtNotification = buildAdminOrderNotification(
+      {
+        id: orderId,
+        orderNumber,
+        createdAt: nowIso,
+        status: 'Order Received',
+        customerName,
+        customerEmail,
+        customerPhone,
+        address,
+        area: area || city,
+        city,
+        postalCode,
+        deliveryNote: deliveryNote || undefined,
+        paymentMethod,
+        paymentReference: paymentMethod !== 'Cash on Delivery' ? paymentReference : undefined,
+        paymentSenderNumber: paymentMethod !== 'Cash on Delivery' ? paymentSenderNumber : undefined,
+        paymentStatus: 'Pending',
+        items: authoritativeItems,
+        subtotal,
+        shipping,
+        discount,
+        total,
+      },
+      {
+        products: products as { id: string; slug?: string; name?: string }[],
+        publicOrigin,
+        additionalInformation: rawAdditionalInfo || undefined,
+        storeName: 'PYTHOX WORLD',
+        adminEmail: 'pythoxfashion@gmail.com',
+      }
+    );
+
+    const notificationRecord: StoreRecord = {
+      id: `notif-${orderId}`,
+      orderId,
+      orderNumber,
+      status: 'pending',
+      attempts: 0,
+      channel: 'emailjs_client',
+      createdAt: nowIso,
+      updatedAt: nowIso,
+      messageText: builtNotification.messageText,
+      templateParams: builtNotification.templateParams,
+    };
+
+    try {
+      const serverDispatch = await dispatchServerAdminOrderNotification({
+        orderId,
+        orderNumber,
+        messageText: builtNotification.messageText,
+        templateParams: builtNotification.templateParams as unknown as Record<string, string>,
+      });
+      if (serverDispatch.attempted) {
+        notificationRecord.attempts = 1;
+        notificationRecord.channel = serverDispatch.channel;
+        notificationRecord.updatedAt = new Date().toISOString();
+        if (serverDispatch.sent) {
+          notificationRecord.status = 'sent';
+          notificationRecord.sentAt = notificationRecord.updatedAt;
+        } else {
+          notificationRecord.status = 'failed';
+          notificationRecord.lastError = serverDispatch.error || 'Dispatch failed.';
+        }
+      }
+    } catch (dispatchErr) {
+      notificationRecord.attempts = 1;
+      notificationRecord.status = 'failed';
+      notificationRecord.lastError = sanitizeNotificationError(dispatchErr);
+    }
+
+    const existingNotifications = Array.isArray(store.orderNotifications)
+      ? store.orderNotifications
+      : [];
+    const nextNotifications = [notificationRecord, ...existingNotifications].slice(0, 500);
+
     await saveStore({
       ...store,
       orders: nextOrders,
       products: nextProducts,
+      orderNotifications: nextNotifications,
       ...(nextCoupons ? { coupons: nextCoupons } : {}),
     });
 
-    return res.status(201).json({ order: savedOrder });
+    const ackToken = signNotificationAckToken(orderId, orderNumber);
+
+    return res.status(201).json({
+      order: savedOrder,
+      notification: {
+        status: notificationRecord.status,
+        alreadyNotified: notificationRecord.status === 'sent',
+        ackToken,
+        messageText: builtNotification.messageText,
+        templateParams: builtNotification.templateParams,
+      },
+    });
   });
 
   // Public Order Tracking (requires exact matching Order ID + Customer Phone)
@@ -2118,10 +2481,14 @@ async function startServer() {
       return res.status(401).json({ error: 'Unauthorized admin session.' });
     }
     const store = await loadStore();
+    const ordersList = Array.isArray(store.orders) ? store.orders : [];
+    const productsList = Array.isArray(store.products) ? store.products : [];
+    const productSales = computeProductSalesFromOrders(ordersList, productsList);
     return res.json({
-      orders: Array.isArray(store.orders) ? store.orders : [],
+      orders: ordersList,
+      productSales,
       coupons: store.coupons,
-      products: Array.isArray(store.products) ? store.products : [],
+      products: productsList,
       categories: store.categories,
       collections: store.collections,
       reviews: Array.isArray(store.reviews) ? store.reviews : [],
@@ -2145,12 +2512,16 @@ async function startServer() {
       await hydrateStoreFromFirestore(true, firebaseToken);
       store = await loadStore();
     }
+    const ordersList = Array.isArray(store.orders) ? store.orders : [];
+    const productsList = Array.isArray(store.products) ? store.products : [];
+    const productSales = computeProductSalesFromOrders(ordersList, productsList);
     return res.json({
-      products: Array.isArray(store.products) ? store.products : [],
+      products: productsList,
+      productSales,
       categories: store.categories,
       collections: store.collections,
       coupons: store.coupons,
-      orders: Array.isArray(store.orders) ? store.orders : [],
+      orders: ordersList,
       reviews: Array.isArray(store.reviews) ? store.reviews : [],
     });
   });
@@ -2164,10 +2535,11 @@ async function startServer() {
       return res.status(400).json({ error: 'Invalid order ID.' });
     }
 
-    const { status, paymentStatus, deliveryStatus } = (req.body || {}) as {
+    const { status, paymentStatus, deliveryStatus, order: fallbackOrder } = (req.body || {}) as {
       status?: unknown;
       paymentStatus?: unknown;
       deliveryStatus?: unknown;
+      order?: Record<string, unknown>;
     };
 
     if (status !== undefined && (typeof status !== 'string' || !ORDER_STATUSES.has(status))) {
@@ -2183,9 +2555,25 @@ async function startServer() {
       return res.status(400).json({ error: 'Invalid delivery note.' });
     }
 
+    const firebaseToken = getFirebaseIdTokenFromReq(req);
+    const firebaseAdminVerified = Boolean(
+      firebaseToken && (await verifyFirebaseAdminToken(firebaseToken))
+    );
+
     const store = await loadStore();
-    const existingOrders = Array.isArray(store.orders) ? store.orders : [];
-    const targetOrder = existingOrders.find((o) => o.id === orderId);
+    let existingOrders = Array.isArray(store.orders) ? store.orders : [];
+    let targetOrder = existingOrders.find((o) => o.id === orderId);
+    if (!targetOrder && firebaseAdminVerified && firebaseToken) {
+      const fsOrder = await getFirestoreDoc('orders', orderId, firebaseToken).catch(() => null);
+      if (fsOrder && fsOrder.id === orderId) {
+        targetOrder = fsOrder;
+        existingOrders = [fsOrder, ...existingOrders];
+      }
+    }
+    if (!targetOrder && fallbackOrder && typeof fallbackOrder === 'object' && fallbackOrder.id === orderId) {
+      targetOrder = fallbackOrder as StoreRecord;
+      existingOrders = [targetOrder, ...existingOrders];
+    }
     if (!targetOrder) {
       return res.status(404).json({ error: 'Order not found.' });
     }
@@ -2231,12 +2619,23 @@ async function startServer() {
       };
     });
 
+    const nextProductSales = computeProductSalesFromOrders(
+      nextOrders,
+      nextProducts || store.products || []
+    );
+
     await saveStore({
       ...store,
       orders: nextOrders,
+      productSales: nextProductSales,
       ...(nextProducts ? { products: nextProducts } : {}),
     });
-    return res.json({ ok: true });
+
+    if (firebaseAdminVerified && firebaseToken) {
+      await syncProductSalesToFirestore(nextProductSales, firebaseToken).catch(() => {});
+    }
+
+    return res.json({ ok: true, productSales: nextProductSales });
   });
 
   // Admin Real Media Upload Endpoint (Images up to 10MB, Videos up to 50MB + Magic Byte Verification)
@@ -2640,7 +3039,7 @@ async function startServer() {
       reviews_count: Math.max(0, Math.round(Number(product.reviews_count) || 0)),
       featured: Boolean(product.featured),
       new_arrival: Boolean(product.new_arrival),
-      best_seller: Boolean(product.best_seller),
+      best_seller: false,
       trending: Boolean(product.trending),
       winter_collection: Boolean(product.winter_collection),
       sale: hasSaleDiscount,

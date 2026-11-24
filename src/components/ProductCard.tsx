@@ -14,6 +14,7 @@ interface ProductCardProps {
 
 export const ProductCard: React.FC<ProductCardProps> = ({
   product,
+  showBestSellerTag = false,
 }) => {
   const { addToCart, toggleWishlist, isInWishlist } = useStore();
   const [imgError, setImgError] = useState(false);
@@ -91,21 +92,30 @@ export const ProductCard: React.FC<ProductCardProps> = ({
           className="absolute inset-0 bg-gradient-to-t from-[#0A0A0A]/95 via-[#0A0A0A]/30 to-transparent pointer-events-none"
         />
 
-        {/* Top-Left Badge: Discount, NEW, or SOLD OUT */}
-        <div className="absolute top-3 left-3 sm:top-3.5 sm:left-3.5 z-10 pointer-events-none">
+        {/* Top-Left Badge: SOLD OUT, BEST SELLER, Discount, or NEW */}
+        <div className="absolute top-3 left-3 sm:top-3.5 sm:left-3.5 z-10 pointer-events-none flex flex-wrap items-center gap-1.5">
           {product.inventory <= 0 ? (
             <span className="inline-block px-2.5 py-1 rounded-lg bg-[#292929] text-white font-mono text-[10px] font-bold uppercase tracking-wider">
               SOLD OUT
             </span>
-          ) : discountPct > 0 ? (
-            <span className="inline-block px-2.5 py-1 rounded-lg bg-white text-[#0A0A0A] font-mono text-[10px] font-bold uppercase tracking-wider">
-              -{discountPct}%
-            </span>
-          ) : product.new_arrival ? (
-            <span className="inline-block px-2.5 py-1 rounded-lg bg-[#0A0A0A]/90 border border-[#292929] text-white font-mono text-[10px] font-bold uppercase tracking-wider">
-              NEW
-            </span>
-          ) : null}
+          ) : (
+            <>
+              {showBestSellerTag && (
+                <span className="inline-block px-2.5 py-1 rounded-lg bg-[#0A0A0A]/90 border border-white/25 text-white font-mono text-[10px] font-bold uppercase tracking-wider">
+                  BEST SELLER
+                </span>
+              )}
+              {discountPct > 0 ? (
+                <span className="inline-block px-2.5 py-1 rounded-lg bg-white text-[#0A0A0A] font-mono text-[10px] font-bold uppercase tracking-wider">
+                  -{discountPct}%
+                </span>
+              ) : !showBestSellerTag && product.new_arrival ? (
+                <span className="inline-block px-2.5 py-1 rounded-lg bg-[#0A0A0A]/90 border border-[#292929] text-white font-mono text-[10px] font-bold uppercase tracking-wider">
+                  NEW
+                </span>
+              ) : null}
+            </>
+          )}
         </div>
 
         {/* Bottom-Left: Product Title, Price & Rating */}

@@ -9,6 +9,7 @@
 6. Reviews require strict field bounds (`rating` 1..5, `comment` 1..1000, `authorName` 1..80) and reject ghost fields.
 7. Every single-document ID path variable must satisfy `isValidId(id)` (`^[a-zA-Z0-9_\\-]+$`, length 1..128).
 8. Email-based admin bootstrap strictly requires `request.auth.token.email_verified == true`.
+9. Aggregated sales rankings (`/product_sales/{productId}`) contain strictly non-PII counters (`unitsSold`, `revenue`, `orderCount`) readable publicly for Best Sellers sorting without exposing `/orders`, and writable strictly by verified admins (`isAdmin()`).
 
 ## 2. Dirty Dozen Payloads (Must Return PERMISSION_DENIED)
 1. **Unauthenticated Product Create**: Anonymous user attempts `setDoc(/products/p1, { ... })`.

@@ -15,6 +15,8 @@ import { useStore } from '../context/StoreContext';
 import { SeoHead } from '../components/SeoHead';
 import { BrandLogo } from '../components/BrandLogo';
 import { Reveal } from '../components/Motion';
+import { CloudMediaImage } from '../components/CloudMediaImage';
+import { ProductCard } from '../components/ProductCard';
 import {
   EDITORIAL_MEDIA,
   HERO_CAMPAIGN_FALLBACK_URL,
@@ -61,11 +63,11 @@ const CATEGORY_TILES: EditorialCategoryTile[] = [
     objectPos: 'object-center',
   },
   {
-    id: 'tile-new-arrivals',
-    title: 'NEW ARRIVALS',
+    id: 'tile-sneakers',
+    title: 'SNEAKERS',
     cta: 'Shop Now',
-    to: '/new-arrivals',
-    image: EDITORIAL_MEDIA.prodDenimJeans,
+    to: '/category/sneakers',
+    image: EDITORIAL_MEDIA.catShoes,
     objectPos: 'object-center',
   },
 ];
@@ -94,8 +96,10 @@ const BENEFIT_ITEMS = [
 ];
 
 export const HomePage: React.FC = () => {
-  const { products, productsLoading, productsError, refreshProducts, settings } = useStore();
+  const { products, bestSellers, productsLoading, productsError, refreshProducts, settings } = useStore();
   const [brokenImg, setBrokenImg] = useState<Record<string, boolean>>({});
+
+  const topBestSellers = useMemo(() => bestSellers.slice(0, 5), [bestSellers]);
 
   const featuredProducts = useMemo(() => {
     const marked = products.filter((p) => p.featured);
@@ -184,7 +188,7 @@ export const HomePage: React.FC = () => {
 
       {/* ================= 1. CINEMATIC CAMPAIGN HERO ================= */}
       <section className="relative w-full bg-[#060814] text-white overflow-hidden">
-        <div className="relative mx-auto max-w-[1600px] w-full aspect-[3/4] md:aspect-[16/9] md:min-h-[432px] lg:min-h-[540px] md:max-h-[780px] flex items-center md:pt-16 bg-[#060814] md:bg-[#0B0B0B]">
+        <div className="relative mx-auto max-w-[1600px] w-full aspect-[3/4] md:aspect-[16/9] md:min-h-[432px] lg:min-h-[540px] md:max-h-[900px] flex items-center md:pt-16 bg-[#060814] md:bg-[#0B0B0B]">
           {/* Single Responsive <picture> Layer: Mobile artwork (3:4) <= 767px, Desktop/Tablet artwork (16:9) >= 768px */}
           <div className="absolute inset-0 z-[1]">
             {!brokenImg.hero ? (
@@ -193,8 +197,17 @@ export const HomePage: React.FC = () => {
                   media="(max-width: 767px)"
                   srcSet={mobileHeroImgSrc}
                 />
+                <source
+                  media="(min-width: 768px)"
+                  srcSet={heroImgSrc}
+                />
                 <img
-                  src={heroImgSrc}
+                  src={
+                    typeof window !== 'undefined' &&
+                    window.matchMedia('(max-width: 767px)').matches
+                      ? mobileHeroImgSrc
+                      : heroImgSrc
+                  }
                   alt="PYTHOX WORLD Men's Streetwear Campaign"
                   loading="eager"
                   decoding="async"
@@ -525,17 +538,17 @@ export const HomePage: React.FC = () => {
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3.5 sm:gap-5">
                 {[0, 1, 2, 3, 4].map((slot) => (
                   <div key={slot} className="space-y-3 animate-pulse">
-                    <div className="aspect-[4/5] bg-[#E4E3DF]" />
+                    <div className="aspect-[4/5] rounded-2xl bg-[#E4E3DF]" />
                     <div className="space-y-1.5">
-                      <div className="h-3.5 w-3/4 bg-[#E4E3DF]" />
-                      <div className="h-3 w-1/3 bg-[#E4E3DF]" />
+                      <div className="h-3.5 w-3/4 bg-[#E4E3DF] rounded" />
+                      <div className="h-3 w-1/3 bg-[#E4E3DF] rounded" />
                     </div>
                   </div>
                 ))}
               </div>
             </div>
           ) : productsError && featuredProducts.length === 0 ? (
-            <div className="border border-[#DCDBD6] bg-[#EAE9E4] px-6 py-14 text-center space-y-3">
+            <div className="rounded-2xl border border-[#DCDBD6] bg-[#EAE9E4] px-6 py-14 text-center space-y-3">
               <p className="font-street text-sm sm:text-base font-semibold uppercase tracking-[0.14em] text-[#0A0A0A]">
                 Unable to load products. Please try again.
               </p>
@@ -553,7 +566,7 @@ export const HomePage: React.FC = () => {
               </div>
             </div>
           ) : featuredProducts.length === 0 ? (
-            <div className="border border-[#DCDBD6] bg-[#EAE9E4] px-6 py-14 text-center">
+            <div className="rounded-2xl border border-[#DCDBD6] bg-[#EAE9E4] px-6 py-14 text-center">
               <p className="font-street text-sm sm:text-base font-semibold uppercase tracking-[0.14em] text-[#0A0A0A]">
                 No products are publicly available.
               </p>
@@ -571,18 +584,14 @@ export const HomePage: React.FC = () => {
                     to={`/product/${product.slug}`}
                     className="group block"
                   >
-                    <div className="aspect-[4/5] bg-[#E8E7E3] overflow-hidden relative">
+                    <div className="aspect-[4/5] rounded-2xl bg-[#E8E7E3] border border-[#E0DFDA] overflow-hidden relative shadow-xs">
                       {imgSrc && !brokenImg[product.id] ? (
-                        <img
+                        <CloudMediaImage
+                          key={imgSrc}
                           src={imgSrc}
                           alt={product.name}
                           loading="lazy"
-                          referrerPolicy="no-referrer"
-                          onError={(e) =>
-                            handleCloudMediaImageError(e.currentTarget, imgSrc, () =>
-                              markBroken(product.id)
-                            )
-                          }
+                          onAllFailed={() => markBroken(product.id)}
                           className="h-full w-full object-cover object-center transition-transform duration-500 ease-out [@media(hover:hover)]:group-hover:scale-[1.03]"
                         />
                       ) : (
@@ -614,7 +623,7 @@ export const HomePage: React.FC = () => {
                 to="/shop"
                 className="lg:hidden group block"
               >
-                <div className="aspect-[4/5] bg-[#0A0A0A] text-white p-5 flex flex-col justify-between transition-colors group-hover:bg-[#191919]">
+                <div className="aspect-[4/5] rounded-2xl bg-[#0A0A0A] text-white p-5 flex flex-col justify-between transition-colors group-hover:bg-[#191919]">
                   <span className="font-mono text-[10px] uppercase tracking-[0.22em] text-white/60">
                     ARCHIVE
                   </span>
@@ -644,6 +653,39 @@ export const HomePage: React.FC = () => {
           )}
         </section>
       </Reveal>
+
+      {/* ================= 5B. BEST SELLERS (AUTOMATIC SALES-DRIVEN RANKING) ================= */}
+      {topBestSellers.length > 0 && (
+        <Reveal>
+          <section
+            aria-label="Best Selling Products"
+            className="mx-auto max-w-[1400px] px-4 sm:px-8 lg:px-12 pb-12 sm:pb-16"
+          >
+            <div className="flex items-center justify-between gap-4 mb-6 sm:mb-8">
+              <h2 className="font-street text-xs sm:text-[13px] font-semibold uppercase tracking-[0.22em] text-[#0A0A0A]">
+                BEST SELLERS
+              </h2>
+              <Link
+                to="/best-sellers"
+                className="btn-base btn-secondary btn-sm group"
+              >
+                <span>VIEW ALL</span>
+                <ArrowRight className="h-3.5 w-3.5 transition-transform duration-200 group-hover:translate-x-1" />
+              </Link>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3.5 sm:gap-5">
+              {topBestSellers.map((product) => (
+                <ProductCard
+                  key={product.id}
+                  product={product}
+                  showBestSellerTag
+                />
+              ))}
+            </div>
+          </section>
+        </Reveal>
+      )}
 
       {/* ================= 6. FINAL DARK BRAND CAMPAIGN CLOSING BAND ================= */}
       <section className="relative bg-[#0A0A0A] text-white overflow-hidden border-t border-[#1F1F1F]">

@@ -19,6 +19,7 @@ interface SeoHeadProps {
   image?: string;
   productMeta?: ProductSeoMeta;
   jsonLd?: Record<string, unknown>;
+  noIndex?: boolean;
 }
 
 export const SeoHead: React.FC<SeoHeadProps> = ({
@@ -28,6 +29,7 @@ export const SeoHead: React.FC<SeoHeadProps> = ({
   image,
   productMeta,
   jsonLd,
+  noIndex = false,
 }) => {
   useEffect(() => {
     const fullTitle = title.includes('PYTHOX WORLD')
@@ -55,6 +57,7 @@ export const SeoHead: React.FC<SeoHeadProps> = ({
       rawImage.startsWith('/') ? `${window.location.origin}${rawImage}` : rawImage;
 
     upsertMeta('name', 'description', description);
+    upsertMeta('name', 'robots', noIndex ? 'noindex, nofollow' : 'index, follow');
     upsertMeta('property', 'og:type', ogType);
     upsertMeta('property', 'og:url', canonicalUrl);
     upsertMeta('property', 'og:title', fullTitle);
@@ -113,7 +116,7 @@ export const SeoHead: React.FC<SeoHeadProps> = ({
       const el = document.getElementById(scriptId);
       if (el) el.remove();
     };
-  }, [title, description, ogType, image, productMeta, jsonLd]);
+  }, [title, description, ogType, image, productMeta, jsonLd, noIndex]);
 
   return null;
 };

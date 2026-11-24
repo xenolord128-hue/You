@@ -212,7 +212,6 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
   const [newArrival, setNewArrival] = useState(true);
   const [featured, setFeatured] = useState(false);
   const [isSale, setIsSale] = useState(false);
-  const [bestSeller, setBestSeller] = useState(false);
   const [trending, setTrending] = useState(false);
   const [winterCollection, setWinterCollection] = useState(false);
 
@@ -287,7 +286,6 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
     setNewArrival(true);
     setFeatured(false);
     setIsSale(false);
-    setBestSeller(false);
     setTrending(false);
     setWinterCollection(false);
     setErrors({});
@@ -340,7 +338,6 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
       setNewArrival(true);
       setFeatured(false);
       setIsSale(false);
-      setBestSeller(false);
       setTrending(false);
       setWinterCollection(false);
       setErrors({});
@@ -420,7 +417,6 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
     setNewArrival(Boolean(editingProduct.new_arrival));
     setFeatured(Boolean(editingProduct.featured));
     setIsSale(Boolean(editingProduct.sale || hasDiscount));
-    setBestSeller(Boolean(editingProduct.best_seller));
     setTrending(Boolean(editingProduct.trending));
     setWinterCollection(Boolean(editingProduct.winter_collection));
   }, [editingProduct, collections, categories]);
@@ -963,7 +959,7 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
         reviews_count: editingProduct?.reviews_count || 0,
         featured,
         new_arrival: newArrival,
-        best_seller: bestSeller,
+        best_seller: false,
         trending,
         winter_collection: winterCollection,
         sale: Boolean(hasValidDiscount || isSale),
@@ -1022,7 +1018,6 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
     { label: 'Featured Product', on: featured, toggle: () => setFeatured((v) => !v) },
     { label: 'New Arrival', on: newArrival, toggle: () => setNewArrival((v) => !v) },
     { label: 'Sale Product', on: isSale, toggle: () => setIsSale((v) => !v) },
-    { label: 'Best Seller', on: bestSeller, toggle: () => setBestSeller((v) => !v) },
     { label: 'Trending', on: trending, toggle: () => setTrending((v) => !v) },
     {
       label: 'Winter Collection',

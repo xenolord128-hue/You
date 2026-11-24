@@ -265,6 +265,25 @@ service cloud.firestore {
         && isValidStr(data.createdAt, 1, 64);
     }
 
+    function isValidProductSale(data) {
+      return data.keys().hasAll([
+          'id', 'productId', 'productName', 'unitsSold', 'revenue', 'orderCount', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'productId', 'sku', 'productName', 'unitsSold', 'revenue', 'orderCount', 'lastSoldAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && isValidId(data.productId)
+        && data.productId == data.id
+        && isValidStr(data.productName, 1, 200)
+        && data.unitsSold is number && data.unitsSold >= 0
+        && data.revenue is number && data.revenue >= 0
+        && data.orderCount is number && data.orderCount >= 0
+        && isValidStr(data.updatedAt, 1, 64)
+        && (!('sku' in data) || isValidStr(data.sku, 0, 80))
+        && (!('lastSoldAt' in data) || isValidStr(data.lastSoldAt, 0, 64));
+    }
+
     match /test/{docId} {
       allow get: if docId == 'connection';
       allow list, create, update, delete: if false;
@@ -368,6 +387,14 @@ service cloud.firestore {
       allow create: if isValidId(mediaId) && isAdmin() && isValidMediaAsset(incoming()) && incoming().id == mediaId;
       allow update: if isValidId(mediaId) && isAdmin() && isValidMediaAsset(incoming()) && incoming().id == existing().id && incoming().createdAt == existing().createdAt;
       allow delete: if isValidId(mediaId) && isAdmin();
+    }
+
+    match /product_sales/{productId} {
+      allow get: if isValidId(productId);
+      allow list: if true;
+      allow create: if isValidId(productId) && isAdmin() && isValidProductSale(incoming()) && incoming().id == productId;
+      allow update: if isValidId(productId) && isAdmin() && isValidProductSale(incoming()) && incoming().id == existing().id && incoming().productId == existing().productId;
+      allow delete: if isValidId(productId) && isAdmin();
     }
   }
 }

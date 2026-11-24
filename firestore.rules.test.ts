@@ -100,4 +100,20 @@ export const DIRTY_DOZEN_CASES: SecurityTestCase[] = [
     expected: 'PERMISSION_DENIED',
     payload: { email: 'attacker@example.com', role: 'admin' },
   },
+  {
+    id: 'DD-13',
+    title: 'Unauthorized Product Sales Stat Forgery',
+    collectionPath: '/product_sales/prod-1',
+    operation: 'create',
+    expected: 'PERMISSION_DENIED',
+    payload: {
+      id: 'prod-1',
+      productId: 'prod-1',
+      productName: 'Tee',
+      unitsSold: 9999,
+      revenue: 999999,
+      orderCount: 100,
+      updatedAt: '2026-11-24T00:00:00.000Z',
+    },
+  },
 ];

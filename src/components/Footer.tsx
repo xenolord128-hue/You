@@ -67,7 +67,7 @@ export const Footer: React.FC = () => {
 
             <div className="flex flex-wrap items-center gap-2.5 pt-1">
               <a
-                href={sanitizeExternalHref(settings.instagramUrl, 'https://instagram.com/pythoxworld')}
+                href={sanitizeExternalHref(settings.instagramUrl, 'https://www.instagram.com/pythoxworld?knvt=MW9kY2t5N3R5eHZwbA==')}
                 target="_blank"
                 rel="noreferrer"
                 className="btn-base btn-dark-ghost btn-sm"

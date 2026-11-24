@@ -144,7 +144,7 @@ export const DEFAULT_SETTINGS: StoreSettings = {
   whatsappNumber: '8801887602095',
   messengerHandle: 'pythoxworld',
   facebookUrl: 'https://www.facebook.com/share/1A8c2wEDBX/',
-  instagramUrl: 'https://instagram.com/pythoxworld',
+  instagramUrl: 'https://www.instagram.com/pythoxworld?knvt=MW9kY2t5N3R5eHZwbA==',
   metaPixelId: '',
   announcementText: 'Free Delivery on orders over ৳3,000 across Bangladesh',
   heroImageUrl: '',

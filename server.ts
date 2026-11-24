@@ -1085,7 +1085,7 @@ function sanitizeSettingsRecord(
   const rawIg = raw.instagramUrl !== undefined ? raw.instagramUrl : base.instagramUrl;
   const instagramUrl = isSafeHttpUrl(rawIg)
     ? rawIg.trim().slice(0, 300)
-    : 'https://instagram.com/pythoxworld';
+    : 'https://www.instagram.com/pythoxworld?knvt=MW9kY2t5N3R5eHZwbA==';
 
   const rawHero = raw.heroImageUrl !== undefined ? raw.heroImageUrl : base.heroImageUrl;
   const heroImageUrl =

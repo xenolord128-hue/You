@@ -1094,7 +1094,7 @@ export const AdminPage: React.FC = () => {
         whatsappNumber: whatsappNumber.trim(),
         messengerHandle: messengerHandle.trim(),
         facebookUrl: safeFb || 'https://www.facebook.com/share/1A8c2wEDBX/',
-        instagramUrl: safeIg || 'https://instagram.com/pythoxworld',
+        instagramUrl: safeIg || 'https://www.instagram.com/pythoxworld?knvt=MW9kY2t5N3R5eHZwbA==',
         metaPixelId: safePixel,
         heroImageUrl: safeHero,
         mobileHeroImageUrl: safeMobileHero,

@@ -231,7 +231,7 @@ export const ContactPage: React.FC = () => {
                 Facebook Page
               </a>
               <a
-                href={sanitizeExternalHref(settings.instagramUrl, 'https://instagram.com/pythoxworld')}
+                href={sanitizeExternalHref(settings.instagramUrl, 'https://www.instagram.com/pythoxworld?knvt=MW9kY2t5N3R5eHZwbA==')}
                 target="_blank"
                 rel="noreferrer"
                 className="text-[#0A0A0A] underline underline-offset-4"

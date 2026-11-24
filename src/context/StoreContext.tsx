@@ -346,6 +346,9 @@ function mergeStoreSettings(raw?: Partial<StoreSettings> | null): StoreSettings 
   if (raw.facebookUrl === 'https://facebook.com/pythoxworld' || !raw.facebookUrl?.trim()) {
     merged.facebookUrl = DEFAULT_SETTINGS.facebookUrl;
   }
+  if (raw.instagramUrl === 'https://instagram.com/pythoxworld' || !raw.instagramUrl?.trim()) {
+    merged.instagramUrl = DEFAULT_SETTINGS.instagramUrl;
+  }
   if (!raw.supportEmail?.trim()) {
     merged.supportEmail = DEFAULT_SETTINGS.supportEmail;
   }

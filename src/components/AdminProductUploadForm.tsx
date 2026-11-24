@@ -4,7 +4,6 @@ import {
   ArrowLeft,
   ArrowRight,
   CheckCircle2,
-  Film,
   ImagePlus,
   Loader2,
   Plus,
@@ -51,7 +50,6 @@ const PRESET_COLORS: ProductColor[] = [
 ];
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
-const MAX_VIDEO_BYTES = 50 * 1024 * 1024;
 const ALLOWED_IMAGE_EXT = /\.(jpg|jpeg|png|webp)$/i;
 const ALLOWED_IMAGE_MIME = new Set([
   'image/jpeg',
@@ -59,26 +57,9 @@ const ALLOWED_IMAGE_MIME = new Set([
   'image/png',
   'image/webp',
 ]);
-const ALLOWED_VIDEO_EXT = /\.(mp4|webm|mov)$/i;
-const ALLOWED_VIDEO_MIME = new Set([
-  'video/mp4',
-  'video/webm',
-  'video/quicktime',
-]);
 
 interface MediaImageEntry {
   id: string;
-  url: string;
-  file?: File;
-  objectUrl?: string;
-  name: string;
-  sizeBytes?: number;
-  status: 'uploaded' | 'pending' | 'uploading' | 'error';
-  progress: number;
-  error?: string;
-}
-
-interface MediaVideoEntry {
   url: string;
   file?: File;
   objectUrl?: string;
@@ -95,7 +76,6 @@ interface FormErrors {
   colors?: string;
   description?: string;
   images?: string;
-  video?: string;
   price?: string;
   salePrice?: string;
   category?: string;
@@ -200,8 +180,6 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
   const [primaryImageId, setPrimaryImageId] = useState<string>('');
   const [imageDropActive, setImageDropActive] = useState(false);
   const [draggedImageId, setDraggedImageId] = useState<string | null>(null);
-  const [video, setVideo] = useState<MediaVideoEntry | null>(null);
-  const [videoDropActive, setVideoDropActive] = useState(false);
 
   // STOREFRONT PRICING, CATEGORY, TAGS & STATUS DETAILS
   const [sku, setSku] = useState<string>(() => buildInitialSku());
@@ -237,19 +215,13 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
   const [successBanner, setSuccessBanner] = useState<string | null>(null);
 
   const imageInputRef = useRef<HTMLInputElement | null>(null);
-  const videoInputRef = useRef<HTMLInputElement | null>(null);
   const imagesRef = useRef<MediaImageEntry[]>([]);
-  const videoRef = useRef<MediaVideoEntry | null>(null);
   const uploadAbortRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(true);
 
   useEffect(() => {
     imagesRef.current = images;
   }, [images]);
-
-  useEffect(() => {
-    videoRef.current = video;
-  }, [video]);
 
   // Revoke any remaining blob URLs and cancel active uploads on unmount
   useEffect(() => {
@@ -261,9 +233,6 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
       imagesRef.current.forEach((img) => {
         if (img.objectUrl) URL.revokeObjectURL(img.objectUrl);
       });
-      if (videoRef.current?.objectUrl) {
-        URL.revokeObjectURL(videoRef.current.objectUrl);
-      }
     };
   }, []);
 
@@ -273,9 +242,6 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
     imagesRef.current.forEach((img) => {
       if (img.objectUrl) URL.revokeObjectURL(img.objectUrl);
     });
-    if (videoRef.current?.objectUrl) {
-      URL.revokeObjectURL(videoRef.current.objectUrl);
-    }
 
     setName('');
     setSelectedSizes(['S', 'M', 'L', 'XL']);
@@ -287,7 +253,6 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
     setDescription('');
     setImages([]);
     setPrimaryImageId('');
-    setVideo(null);
     setSku(buildInitialSku());
     setCategory(categories[0]?.name || FALLBACK_CATEGORIES[0]);
     setAdditionalCategories([]);
@@ -328,9 +293,6 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
     imagesRef.current.forEach((img) => {
       if (img.objectUrl) URL.revokeObjectURL(img.objectUrl);
     });
-    if (videoRef.current?.objectUrl) {
-      URL.revokeObjectURL(videoRef.current.objectUrl);
-    }
 
     if (!editingProduct) {
       setName('');
@@ -343,7 +305,6 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
       setDescription('');
       setImages([]);
       setPrimaryImageId('');
-      setVideo(null);
       setSku(buildInitialSku());
       setCategory(categories[0]?.name || FALLBACK_CATEGORIES[0]);
       setAdditionalCategories([]);
@@ -402,17 +363,6 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
     }));
     setImages(loadedImages);
     setPrimaryImageId(loadedImages[0]?.id || '');
-
-    if (editingProduct.videoUrl) {
-      setVideo({
-        url: editingProduct.videoUrl,
-        name: editingProduct.videoUrl.split('/').pop() || 'Product Video',
-        status: 'uploaded',
-        progress: 100,
-      });
-    } else {
-      setVideo(null);
-    }
 
     setSku(editingProduct.sku || buildInitialSku());
     const resolvedCat =
@@ -708,128 +658,6 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
     });
   };
 
-  // --- VIDEO HANDLERS ---
-  const handleSelectVideoFile = (file: File | undefined) => {
-    if (!file) return;
-    cancelActiveMediaUpload('product-video-upload');
-    const validType =
-      ALLOWED_VIDEO_MIME.has(file.type.toLowerCase()) ||
-      ALLOWED_VIDEO_EXT.test(file.name);
-    if (!validType) {
-      setErrors((prev) => ({
-        ...prev,
-        video: `${file.name}: unsupported format. Allowed: MP4, WEBM, MOV.`,
-      }));
-      return;
-    }
-    if (file.size <= 0) {
-      setErrors((prev) => ({ ...prev, video: 'Selected video file is empty.' }));
-      return;
-    }
-    if (file.size > MAX_VIDEO_BYTES) {
-      setErrors((prev) => ({
-        ...prev,
-        video: `${file.name} (${formatBytes(file.size)}) exceeds the 50 MB limit.`,
-      }));
-      return;
-    }
-
-    if (videoRef.current?.objectUrl) {
-      URL.revokeObjectURL(videoRef.current.objectUrl);
-    }
-
-    const objectUrl = URL.createObjectURL(file);
-    setErrors((prev) => ({ ...prev, video: undefined }));
-    setSuccessBanner(null);
-    setVideo({
-      url: objectUrl,
-      objectUrl,
-      file,
-      name: file.name,
-      sizeBytes: file.size,
-      status: 'pending',
-      progress: 0,
-    });
-
-    void validateMediaFile(file, 'video').catch((err: unknown) => {
-      if (!mountedRef.current) return;
-      const msg =
-        err instanceof Error
-          ? err.message
-          : `${file.name} appears corrupted or unplayable.`;
-      setVideo((prev) =>
-        prev && prev.name === file.name ? { ...prev, status: 'error', error: msg } : prev
-      );
-      setErrors((prev) => ({ ...prev, video: msg }));
-    });
-  };
-
-  const retryVideoUpload = async () => {
-    if (isSubmitting) return;
-    const currentVideo = videoRef.current;
-    if (!currentVideo || !currentVideo.file || currentVideo.status === 'uploading') return;
-
-    await auth.authStateReady();
-    if (!isFirebaseAdminLinked || !isVerifiedAdminUser(auth.currentUser)) {
-      const msg =
-        'Authentication failed (storage/unauthenticated): Google Admin sign-in (lord79915@gmail.com or pythoxfashion@gmail.com) is required before uploading.';
-      setErrors((prev) => ({ ...prev, submit: msg }));
-      showToast(msg);
-      return;
-    }
-
-    const controller = new AbortController();
-    uploadAbortRef.current = controller;
-
-    setErrors((prev) => ({ ...prev, video: undefined, submit: undefined }));
-    setVideo((prev) =>
-      prev ? { ...prev, status: 'uploading', progress: 2, error: undefined } : prev
-    );
-
-    try {
-      const uploadedVideoUrl = await uploadMediaToFirebase(
-        currentVideo.file,
-        'products/videos',
-        (pct) => {
-          if (!mountedRef.current) return;
-          setVideo((prev) => (prev ? { ...prev, progress: pct } : prev));
-        },
-        adminSessionToken,
-        { uploadKey: 'product-video-upload', signal: controller.signal }
-      );
-      if (!isValidUploadedMediaUrl(uploadedVideoUrl)) {
-        throw new Error(`Invalid video download URL returned for ${currentVideo.name}.`);
-      }
-      if (currentVideo.objectUrl) URL.revokeObjectURL(currentVideo.objectUrl);
-      if (!mountedRef.current) return;
-      setVideo({
-        url: uploadedVideoUrl,
-        name: currentVideo.name,
-        sizeBytes: currentVideo.sizeBytes,
-        status: 'uploaded',
-        progress: 100,
-      });
-      showToast('Product video uploaded successfully');
-    } catch (err: unknown) {
-      if (!mountedRef.current) return;
-      const msg =
-        err instanceof Error ? err.message : `Failed to upload ${currentVideo.name}.`;
-      setVideo((prev) =>
-        prev ? { ...prev, status: 'error', progress: 0, error: msg } : prev
-      );
-      setErrors((prev) => ({ ...prev, submit: msg }));
-      showToast(msg);
-    }
-  };
-
-  const handleRemoveVideo = () => {
-    cancelActiveMediaUpload('product-video-upload');
-    if (video?.objectUrl) URL.revokeObjectURL(video.objectUrl);
-    setVideo(null);
-    setErrors((prev) => ({ ...prev, video: undefined }));
-    if (videoInputRef.current) videoInputRef.current.value = '';
-  };
-
   // --- DRAFT COPY HELPER ---
   const handleGenerateCopy = async () => {
     if (!name.trim()) {
@@ -963,8 +791,7 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
       // 1. Upload any pending/failed local image files sequentially with progress tracking
       const currentImages = [...images];
       const pendingImageCount = currentImages.filter((i) => i.file && i.status !== 'uploaded').length;
-      const hasPendingVideo = Boolean(video?.file && video.status !== 'uploaded');
-      const totalSteps = pendingImageCount + (hasPendingVideo ? 1 : 0) + 1;
+      const totalSteps = pendingImageCount + 1;
       let completedSteps = 0;
       let pendingImageIdx = 0;
 
@@ -1047,62 +874,7 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
         }
       }
 
-      // 2. Upload pending/failed product video (if provided)
-      let finalVideoUrl: string | undefined = video?.url || undefined;
-      if (video?.file && video.status !== 'uploaded') {
-        const videoFile = video.file;
-        setSubmitStatusText(`Uploading product video (${videoFile.name})...`);
-        setVideo((prev) =>
-          prev ? { ...prev, status: 'uploading', error: undefined } : prev
-        );
-
-        try {
-          const uploadedVideoUrl = await uploadMediaToFirebase(
-            videoFile,
-            'products/videos',
-            (pct) => {
-              if (!mountedRef.current) return;
-              setVideo((prev) => (prev ? { ...prev, progress: pct } : prev));
-              const overall = Math.round(
-                ((completedSteps + pct / 100) / totalSteps) * 90 + 5
-              );
-              setSubmitProgress(overall);
-            },
-            adminSessionToken,
-            { uploadKey: 'product-video-upload', signal: batchAbortController.signal }
-          );
-
-          if (!isValidUploadedMediaUrl(uploadedVideoUrl)) {
-            throw new Error(
-              `Invalid video URL returned for ${videoFile.name}. Please retry the upload.`
-            );
-          }
-
-          if (video.objectUrl) URL.revokeObjectURL(video.objectUrl);
-          finalVideoUrl = uploadedVideoUrl;
-          setVideo({
-            url: uploadedVideoUrl,
-            name: videoFile.name,
-            sizeBytes: videoFile.size,
-            status: 'uploaded',
-            progress: 100,
-          });
-          completedSteps += 1;
-        } catch (err: unknown) {
-          const message =
-            err instanceof Error ? err.message : 'Failed to upload product video.';
-          setVideo((prev) =>
-            prev ? { ...prev, status: 'error', progress: 0, error: message } : prev
-          );
-          throw new Error(message);
-        }
-      } else if (finalVideoUrl && !isValidUploadedMediaUrl(finalVideoUrl)) {
-        throw new Error(
-          'Product video upload did not complete with a valid storage URL. Please retry or remove the video.'
-        );
-      }
-
-      // 3. Verify all final image/video URLs before creating Firestore product document
+      // 2. Verify all final image URLs before creating Firestore product document
       const validUrls = uploadedImages
         .map((img) => img.url.trim())
         .filter((url) => isValidUploadedMediaUrl(url));
@@ -1151,7 +923,7 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
         compare_at_price: finalCompareAtPrice,
         images: orderedImageUrls,
         primaryImage,
-        ...(finalVideoUrl ? { videoUrl: finalVideoUrl } : {}),
+        ...(editingProduct?.videoUrl ? { videoUrl: editingProduct.videoUrl } : {}),
         colors: selectedColors,
         sizes: selectedSizes,
         inventory: Math.max(0, Number(inventory) || 0),
@@ -1188,7 +960,7 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
         setSuccessBanner(
           `"${saved.name}" saved as ${saved.status} with ${saved.images.length} image${
             saved.images.length === 1 ? '' : 's'
-          }${saved.videoUrl ? ' and 1 video' : ''}.${
+          }.${
             saved.status === 'Published'
               ? ' It is now live on the public storefront.'
               : ' It remains hidden from the public storefront until published.'
@@ -1653,7 +1425,7 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
             <h3 className="text-[18px] mt-0.5">Product Media</h3>
           </div>
           <span className="admin-sub">
-            Upload multiple high-resolution photos and an optional product video
+            Upload multiple high-resolution product photos
           </span>
         </div>
 
@@ -1877,160 +1649,6 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
                 );
               })}
             </div>
-          )}
-        </div>
-
-        {/* 6. Product Video Upload Section */}
-        <div className="border-t border-[#ECECEB] pt-5 flex flex-col gap-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <label className="admin-lbl">Product Video (Optional)</label>
-            <span className="admin-sub">MP4, WEBM, MOV · Max 50 MB</span>
-          </div>
-
-          <input
-            ref={videoInputRef}
-            type="file"
-            accept="video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov"
-            className="hidden"
-            onChange={(e) => {
-              handleSelectVideoFile(e.target.files?.[0]);
-              e.target.value = '';
-            }}
-          />
-
-          {!video ? (
-            <div
-              role="button"
-              tabIndex={0}
-              onClick={() => videoInputRef.current?.click()}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault();
-                  videoInputRef.current?.click();
-                }
-              }}
-              onDragOver={(e) => {
-                e.preventDefault();
-                setVideoDropActive(true);
-              }}
-              onDragLeave={() => setVideoDropActive(false)}
-              onDrop={(e) => {
-                e.preventDefault();
-                setVideoDropActive(false);
-                handleSelectVideoFile(e.dataTransfer.files?.[0]);
-              }}
-              className={`rounded-[12px] border-2 border-dashed p-5 text-center transition-colors cursor-pointer flex flex-col sm:flex-row items-center justify-between gap-4 ${
-                videoDropActive
-                  ? 'border-[#0A0A0A] bg-[#F1F1F0]'
-                  : errors.video
-                  ? 'border-[#B91C1C] bg-[#FEF2F2]/40'
-                  : 'border-[#CFCFCE] bg-[#FAFAFA] hover:border-[#0A0A0A]'
-              }`}
-            >
-              <div className="flex items-center gap-3 text-left">
-                <div className="w-10 h-10 rounded-full bg-white border border-[#D4D4D3] flex items-center justify-center text-[#0A0A0A] shrink-0">
-                  <Film className="h-4 w-4" />
-                </div>
-                <div className="flex flex-col gap-0.5">
-                  <span className="text-[13.5px] font-semibold text-[#0A0A0A]">
-                    Add a product runway / fit video
-                  </span>
-                  <span className="text-[12px] text-[#6A6A6A]">
-                    Drag &amp; drop MP4, WEBM, or MOV here or select from your device
-                  </span>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  videoInputRef.current?.click();
-                }}
-                className="admin-btn admin-btn-sm shrink-0"
-              >
-                <Upload className="h-3.5 w-3.5" /> Select Video
-              </button>
-            </div>
-          ) : (
-            <div className="rounded-[12px] border border-[#D4D4D3] bg-[#FAFAFA] p-4 flex flex-col gap-3">
-              <div className="grid grid-cols-1 md:grid-cols-[260px_minmax(0,1fr)] gap-4 items-center">
-                <video
-                  src={video.url}
-                  controls
-                  playsInline
-                  preload="metadata"
-                  className="w-full max-h-[210px] rounded-[9px] bg-[#0A0A0A] object-contain border border-[#D4D4D3]"
-                />
-                <div className="flex flex-col gap-2.5 min-w-0">
-                  <div className="flex flex-col gap-0.5">
-                    <span className="admin-lbl">Selected Video</span>
-                    <span className="text-[14px] font-semibold text-[#0A0A0A] truncate">
-                      {video.name}
-                    </span>
-                    <span className="admin-sub">
-                      {video.sizeBytes ? formatBytes(video.sizeBytes) : 'Saved in Firebase Storage'} ·{' '}
-                      {video.status === 'uploaded'
-                        ? 'Uploaded'
-                        : video.status === 'uploading'
-                        ? `Uploading ${video.progress}%`
-                        : video.status === 'error'
-                        ? 'Upload failed'
-                        : 'Pending upload'}
-                    </span>
-                  </div>
-
-                  {video.status === 'uploading' && (
-                    <div className="flex flex-col gap-1 max-w-sm">
-                      <div className="h-2 rounded-full bg-[#E2E2E1] overflow-hidden">
-                        <div
-                          className="h-full bg-[#0A0A0A] transition-all duration-150"
-                          style={{ width: `${video.progress}%` }}
-                        />
-                      </div>
-                    </div>
-                  )}
-
-                  {video.error && (
-                    <span className="text-[12px] text-[#B91C1C] font-medium">
-                      {video.error}
-                    </span>
-                  )}
-
-                  <div className="flex flex-wrap gap-2">
-                    {video.status === 'error' && video.file && (
-                      <button
-                        type="button"
-                        disabled={isSubmitting}
-                        onClick={() => void retryVideoUpload()}
-                        className="admin-btn admin-btn-dark admin-btn-sm"
-                      >
-                        <RefreshCw className="h-3.5 w-3.5" /> Retry Upload
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      disabled={isSubmitting}
-                      onClick={() => videoInputRef.current?.click()}
-                      className="admin-btn admin-btn-sm"
-                    >
-                      <RefreshCw className="h-3.5 w-3.5" /> Replace Video
-                    </button>
-                    <button
-                      type="button"
-                      disabled={isSubmitting}
-                      onClick={handleRemoveVideo}
-                      className="admin-btn admin-btn-sm"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" /> Remove Video
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {errors.video && (
-            <span className="text-[12px] text-[#B91C1C] font-medium">{errors.video}</span>
           )}
         </div>
       </section>
@@ -2487,8 +2105,7 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
 
           <div className="flex flex-wrap items-center justify-between gap-3">
             <span className="admin-sub">
-              {images.length} image{images.length === 1 ? '' : 's'}
-              {video ? ' · 1 video' : ''} · {selectedSizes.length} size
+              {images.length} image{images.length === 1 ? '' : 's'} · {selectedSizes.length} size
               {selectedSizes.length === 1 ? '' : 's'} · {selectedColors.length} color
               {selectedColors.length === 1 ? '' : 's'} · Status: {status}
             </span>

@@ -674,7 +674,7 @@ export const HomePage: React.FC = () => {
           <div className="flex flex-col items-start md:items-end gap-3">
             <div className="flex items-center gap-2 text-white/85">
               <a
-                href={sanitizeExternalHref(settings.instagramUrl, 'https://instagram.com/pythoxworld')}
+                href={sanitizeExternalHref(settings.instagramUrl, 'https://www.instagram.com/pythoxworld?knvt=MW9kY2t5N3R5eHZwbA==')}
                 target="_blank"
                 rel="noreferrer"
                 aria-label="Instagram"

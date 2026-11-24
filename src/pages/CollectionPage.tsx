@@ -5,6 +5,7 @@ import { ProductCard } from '../components/ProductCard';
 import { SeoHead } from '../components/SeoHead';
 import { sanitizeMediaUrl } from '../lib/formatters';
 import { EDITORIAL_MEDIA } from '../config/storeConfig';
+import { handleCloudMediaImageError } from '../lib/cloudMediaFallback';
 
 export const CollectionPage: React.FC = () => {
   const { slug } = useParams<{ slug: string }>();
@@ -36,6 +37,12 @@ export const CollectionPage: React.FC = () => {
           src={sanitizeMediaUrl(currentCollection?.hero_image, EDITORIAL_MEDIA.heroCampaign)}
           alt={currentCollection?.title}
           referrerPolicy="no-referrer"
+          onError={(e) =>
+            handleCloudMediaImageError(
+              e.currentTarget,
+              sanitizeMediaUrl(currentCollection?.hero_image, EDITORIAL_MEDIA.heroCampaign)
+            )
+          }
           className="h-full w-full object-cover"
         />
         <div className="absolute inset-0 bg-gradient-to-t from-[#0A0A0A]/85 via-[#0A0A0A]/45 to-[#0A0A0A]/20" />

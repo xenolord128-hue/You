@@ -1,9 +1,9 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
-import { Heart, Trash2 } from 'lucide-react';
+import { Heart, ImageOff, Trash2 } from 'lucide-react';
 import { useStore } from '../context/StoreContext';
 import { formatBDT } from '../lib/formatters';
-import { handleCloudMediaImageError } from '../lib/cloudMediaFallback';
+import { CloudMediaImage } from '../components/CloudMediaImage';
 import { SeoHead } from '../components/SeoHead';
 
 export const WishlistPage: React.FC = () => {
@@ -44,18 +44,24 @@ export const WishlistPage: React.FC = () => {
         </div>
       ) : (
         <div className="mt-8 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3.5 sm:gap-6">
-          {saved.map((product) => (
+          {saved.map((product) => {
+            const thumb = product.primaryImage || product.images?.[0] || '';
+            return (
             <article key={product.id} className="flex flex-col rounded-2xl sm:rounded-3xl overflow-hidden bg-white border border-[#D9D9D9] hover:border-[#0A0A0A] transition-colors">
               <Link
                 to={`/product/${product.slug}`}
-                className="aspect-[3/4] bg-[#EAE9E4] overflow-hidden block"
+                className="aspect-[4/5] bg-[#EAE9E4] overflow-hidden block"
               >
-                <img
-                  src={product.images[0]}
+                <CloudMediaImage
+                  src={thumb}
                   alt={product.name}
-                  referrerPolicy="no-referrer"
-                  onError={(e) => handleCloudMediaImageError(e.currentTarget, product.images[0])}
                   className="h-full w-full object-cover hover:scale-[1.03] transition-transform duration-300"
+                  fallback={
+                    <div className="h-full w-full flex flex-col items-center justify-center gap-1.5 text-[#5C5C5C] bg-[#EAE9E4]">
+                      <ImageOff className="h-5 w-5 opacity-60" />
+                      <span className="text-[11px] font-medium">Image Unavailable</span>
+                    </div>
+                  }
                 />
               </Link>
               <div className="p-3.5 sm:p-4 flex-1 flex flex-col justify-between gap-3">
@@ -100,7 +106,8 @@ export const WishlistPage: React.FC = () => {
                 </div>
               </div>
             </article>
-          ))}
+            );
+          })}
         </div>
       )}
     </main>

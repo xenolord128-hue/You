@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { ArrowRight, Search, X } from 'lucide-react';
 import { useStore } from '../context/StoreContext';
 import { formatBDT } from '../lib/formatters';
-import { handleCloudMediaImageError } from '../lib/cloudMediaFallback';
+import { CloudMediaImage } from './CloudMediaImage';
 import { trackSearchEvent } from '../lib/metaPixel';
 import { apiUrl } from '../lib/api';
 
@@ -233,12 +233,14 @@ export const SearchOverlay: React.FC = () => {
                     onClick={() => setIsSearchOpen(false)}
                     className="flex items-center gap-3 p-2.5 rounded-xl bg-white border border-[#D9D9D9] hover:border-[#0A0A0A] transition-colors"
                   >
-                    <img
-                      src={p.images[0]}
-                      alt={p.name}
-                      onError={(e) => handleCloudMediaImageError(e.currentTarget, p.images[0])}
-                      className="h-16 w-16 rounded-lg object-cover bg-[#EAE9E4] shrink-0"
-                    />
+                    <div className="w-16 aspect-[4/5] rounded-xl overflow-hidden bg-[#EAE9E4] shrink-0">
+                      <CloudMediaImage
+                        src={p.primaryImage || p.images[0]}
+                        alt={p.name}
+                        fallback={<div className="h-full w-full bg-[#EAE9E4]" />}
+                        className="h-full w-full object-cover object-center"
+                      />
+                    </div>
                     <div className="min-w-0">
                       <p className="text-[10px] font-mono uppercase tracking-[0.12em] text-[#5C5C5C] font-semibold">
                         {p.category} · {p.sku}

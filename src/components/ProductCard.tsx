@@ -1,9 +1,9 @@
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Heart, ShoppingBag, Star } from 'lucide-react';
 import { Product } from '../types/ecommerce';
 import { calculateDiscountPercent, formatBDT } from '../lib/formatters';
-import { handleCloudMediaImageError } from '../lib/cloudMediaFallback';
+import { CloudMediaImage } from './CloudMediaImage';
 import { useStore } from '../context/StoreContext';
 
 interface ProductCardProps {
@@ -22,6 +22,21 @@ export const ProductCard: React.FC<ProductCardProps> = ({
   const wishlisted = isInWishlist(product.id);
   const discountPct = calculateDiscountPercent(product.price, product.compare_at_price);
 
+  const mainImage = product.primaryImage || product.images[0] || '';
+
+  useEffect(() => {
+    setImgError(false);
+    setImgLoaded(false);
+  }, [mainImage]);
+
+  const handleImageFailed = useCallback(() => {
+    setImgError(true);
+  }, []);
+
+  const handleImageLoaded = useCallback(() => {
+    setImgLoaded(true);
+  }, []);
+
   const handleQuickAdd = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -39,8 +54,6 @@ export const ProductCard: React.FC<ProductCardProps> = ({
     toggleWishlist(product.id);
   };
 
-  const mainImage = product.primaryImage || product.images[0] || '';
-
   return (
     <article className="group relative aspect-[4/5] rounded-2xl sm:rounded-3xl overflow-hidden bg-white border border-[#D9D9D9] navy-shadow transition-[transform,border-color,box-shadow] duration-250 ease-out [@media(hover:hover)]:hover:-translate-y-0.5 hover:border-[#0A0A0A]">
       <Link
@@ -53,17 +66,13 @@ export const ProductCard: React.FC<ProductCardProps> = ({
             {!imgLoaded && (
               <div aria-hidden="true" className="absolute inset-0 skeleton-shimmer" />
             )}
-            <img
+            <CloudMediaImage
+              key={mainImage}
               src={mainImage}
               alt={product.name}
               loading="lazy"
-              referrerPolicy="no-referrer"
-              onLoad={() => setImgLoaded(true)}
-              onError={(e) =>
-                handleCloudMediaImageError(e.currentTarget, mainImage, () =>
-                  setImgError(true)
-                )
-              }
+              onImageLoaded={handleImageLoaded}
+              onAllFailed={handleImageFailed}
               className={`h-full w-full object-cover object-center transition-[transform,opacity] duration-500 ease-out [@media(hover:hover)]:group-hover:scale-105 ${
                 imgLoaded ? 'opacity-100' : 'opacity-0'
               }`}

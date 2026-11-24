@@ -1,12 +1,17 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import {
   AlertCircle,
   ArrowLeft,
   ArrowRight,
   CheckCircle2,
   Copy,
+  ExternalLink,
+  ImageOff,
   ImagePlus,
   Loader2,
+  Maximize2,
+  Minimize2,
   Plus,
   RefreshCw,
   Star,
@@ -31,7 +36,7 @@ import {
 } from '../services/mediaService';
 import { DEFAULT_CATEGORIES } from '../config/storeConfig';
 import { findCategoryByIdentifier, getSortedCategories } from '../lib/categoryUtils';
-import { handleCloudMediaImageError } from '../lib/cloudMediaFallback';
+import { CloudMediaImage } from './CloudMediaImage';
 import { useStore } from '../context/StoreContext';
 import { apiUrl } from '../lib/api';
 import { auth, isVerifiedAdminUser } from '../lib/firebase';
@@ -184,6 +189,7 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
   const [primaryImageId, setPrimaryImageId] = useState<string>('');
   const [imageDropActive, setImageDropActive] = useState(false);
   const [draggedImageId, setDraggedImageId] = useState<string | null>(null);
+  const [containImageIds, setContainImageIds] = useState<Record<string, boolean>>({});
 
   // STOREFRONT PRICING, CATEGORY, TAGS & STATUS DETAILS
   const [sku, setSku] = useState<string>(() => generateUniqueProductCode());
@@ -219,6 +225,8 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
   const [successBanner, setSuccessBanner] = useState<{
     message: string;
     code: string;
+    slug: string;
+    status: ProductStatus;
   } | null>(null);
 
   const imageInputRef = useRef<HTMLInputElement | null>(null);
@@ -260,6 +268,7 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
     setDescription('');
     setImages([]);
     setPrimaryImageId('');
+    setContainImageIds({});
     setSku(generateUniqueProductCode(adminProducts));
     setCategory(categories[0]?.name || FALLBACK_CATEGORIES[0]);
     setAdditionalCategories([]);
@@ -312,6 +321,7 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
       setDescription('');
       setImages([]);
       setPrimaryImageId('');
+      setContainImageIds({});
       setSku(generateUniqueProductCode(adminProducts));
       setCategory(categories[0]?.name || FALLBACK_CATEGORIES[0]);
       setAdditionalCategories([]);
@@ -370,6 +380,7 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
     }));
     setImages(loadedImages);
     setPrimaryImageId(loadedImages[0]?.id || '');
+    setContainImageIds({});
 
     setSku(editingProduct.sku || generateUniqueProductCode(adminProducts, editingProduct.id));
     const resolvedCat =
@@ -973,6 +984,8 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
         setSuccessBanner({
           message: `"${saved.name}" updated (${saved.status}).`,
           code: saved.sku,
+          slug: saved.slug,
+          status: saved.status,
         });
       } else {
         clearForm(true);
@@ -985,6 +998,8 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
               : ' It remains hidden from the public storefront until published.'
           }`,
           code: saved.sku,
+          slug: saved.slug,
+          status: saved.status,
         });
       }
     } catch (err: unknown) {
@@ -1123,6 +1138,15 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
             >
               <Copy className="h-3 w-3" /> Copy Code
             </button>
+            {successBanner.slug && (
+              <Link
+                to={`/product/${successBanner.slug}`}
+                className="inline-flex items-center gap-1.5 rounded-[7px] bg-white/15 border border-white/30 text-white px-2.5 py-1 text-[11.5px] font-semibold hover:bg-white/25 transition-colors"
+              >
+                <ExternalLink className="h-3 w-3" />
+                {successBanner.status === 'Published' ? 'View Product Page' : 'Preview Product'}
+              </Link>
+            )}
           </div>
           <button
             type="button"
@@ -1540,12 +1564,13 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
             <span className="text-[12px] text-[#B91C1C] font-medium">{errors.images}</span>
           )}
 
-          {/* Uploaded / Selected Image Previews Grid */}
+          {/* Uploaded / Selected Image Previews Grid — Rounded-Rectangle Product Cards */}
           {images.length > 0 && (
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3.5 pt-1">
+            <div className="grid grid-cols-1 min-[420px]:grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4 pt-2">
               {images.map((img, idx) => {
                 const isPrimary =
                   primaryImageId === img.id || (!primaryImageId && idx === 0);
+                const useContain = Boolean(containImageIds[img.id]);
                 return (
                   <div
                     key={img.id}
@@ -1558,73 +1583,131 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
                       setDraggedImageId(null);
                     }}
                     onDragEnd={() => setDraggedImageId(null)}
-                    className={`rounded-[11px] border bg-white overflow-hidden flex flex-col transition-shadow ${
+                    className={`group rounded-2xl border bg-white overflow-hidden flex flex-col transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md ${
                       isPrimary
-                        ? 'border-[#0A0A0A] ring-1 ring-[#0A0A0A]'
-                        : 'border-[#D4D4D3]'
+                        ? 'border-[#0A0A0A] ring-1 ring-[#0A0A0A]/90 shadow-sm'
+                        : 'border-[#E0DFDA] hover:border-[#0A0A0A]/40'
                     }`}
                   >
-                    <div className="relative aspect-[4/5] bg-[#EFEFEE]">
-                      <img
-                        src={img.url}
-                        alt={`Image ${idx + 1}: ${img.name}`}
-                        onError={(e) => handleCloudMediaImageError(e.currentTarget, img.url)}
-                        className="w-full h-full object-cover"
-                      />
+                    {/* Padded Rounded-Rectangle Product Frame (4:5 Editorial Portrait) */}
+                    <div className="p-2.5 pb-0">
+                      <div className="relative aspect-[4/5] w-full rounded-xl overflow-hidden bg-[#F4F3EF] border border-[#EAE9E4]">
+                        <CloudMediaImage
+                          src={img.url}
+                          alt={`Product preview ${idx + 1}: ${img.name}`}
+                          className={`w-full h-full transition-transform duration-300 ${
+                            useContain
+                              ? 'object-contain p-2.5'
+                              : 'object-cover object-center group-hover:scale-[1.02]'
+                          }`}
+                          fallback={
+                            <div className="h-full w-full flex flex-col items-center justify-center gap-2 p-4 text-center bg-[#F4F3EF] text-[#6A6A6A]">
+                              <ImageOff className="h-6 w-6 opacity-60" />
+                              <span className="text-[11px] font-medium leading-snug text-[#4A4A4A]">
+                                Preview unavailable
+                              </span>
+                            </div>
+                          }
+                        />
 
-                      <div className="absolute top-2 left-2 flex items-center gap-1.5">
-                        <span className="px-2 py-0.5 rounded-[6px] bg-white/95 border border-[#D4D4D3] text-[10px] font-semibold text-[#0A0A0A]">
-                          Image {idx + 1}
-                        </span>
-                        {isPrimary && (
-                          <span className="px-2 py-0.5 rounded-[6px] bg-[#0A0A0A] text-white text-[10px] font-semibold tracking-wider uppercase">
-                            PRIMARY
+                        {/* Subtle Top Overlay Scrim for Contrast */}
+                        <div
+                          aria-hidden="true"
+                          className="pointer-events-none absolute inset-x-0 top-0 h-14 bg-gradient-to-b from-black/25 via-black/5 to-transparent"
+                        />
+
+                        {/* Order & Primary Indicator */}
+                        <div className="absolute top-2.5 left-2.5 flex items-center gap-1.5">
+                          <span
+                            className={`px-2.5 py-1 rounded-lg text-[10px] font-mono font-semibold tracking-wider uppercase shadow-xs ${
+                              isPrimary
+                                ? 'bg-[#0A0A0A] text-white'
+                                : 'bg-white/95 text-[#0A0A0A] border border-[#E0DFDA]'
+                            }`}
+                          >
+                            {isPrimary ? `#${idx + 1} · Primary` : `#${idx + 1}`}
                           </span>
+                        </div>
+
+                        {/* Remove Button */}
+                        <button
+                          type="button"
+                          disabled={isSubmitting}
+                          onClick={() => removeImage(img.id)}
+                          aria-label={`Remove ${img.name}`}
+                          className="absolute top-2.5 right-2.5 w-8 h-8 rounded-full bg-white/95 border border-[#D4D4D3] text-[#0A0A0A] hover:bg-[#0A0A0A] hover:text-white hover:border-[#0A0A0A] inline-flex items-center justify-center cursor-pointer transition-colors shadow-xs"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+
+                        {/* Framing Mode Toggle (Cover vs Full Fit) */}
+                        {img.status !== 'uploading' && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setContainImageIds((prev) => ({
+                                ...prev,
+                                [img.id]: !prev[img.id],
+                              }))
+                            }
+                            title={
+                              useContain
+                                ? 'Fill rounded-rectangle frame (object-cover)'
+                                : 'Show full uncropped photo (object-contain)'
+                            }
+                            aria-label={
+                              useContain
+                                ? `Switch ${img.name} to cover crop`
+                                : `Switch ${img.name} to full fit`
+                            }
+                            className="absolute bottom-2.5 right-2.5 h-7 px-2 rounded-lg bg-white/92 border border-[#D4D4D3] text-[#0A0A0A] hover:bg-white inline-flex items-center gap-1 text-[10px] font-medium cursor-pointer shadow-xs transition-colors"
+                          >
+                            {useContain ? (
+                              <>
+                                <Maximize2 className="h-3 w-3" /> Cover
+                              </>
+                            ) : (
+                              <>
+                                <Minimize2 className="h-3 w-3" /> Fit
+                              </>
+                            )}
+                          </button>
+                        )}
+
+                        {/* Upload Progress Overlay */}
+                        {img.status === 'uploading' && (
+                          <div className="absolute inset-x-0 bottom-0 bg-[#0A0A0A]/88 backdrop-blur-xs text-white px-3 py-2.5 flex flex-col gap-1.5">
+                            <div className="flex justify-between text-[11px] font-medium">
+                              <span>Uploading...</span>
+                              <span className="tabular-nums">{img.progress}%</span>
+                            </div>
+                            <div className="h-1.5 rounded-full bg-white/25 overflow-hidden">
+                              <div
+                                className="h-full bg-white transition-all duration-150"
+                                style={{ width: `${img.progress}%` }}
+                              />
+                            </div>
+                          </div>
                         )}
                       </div>
-
-                      <button
-                        type="button"
-                        disabled={isSubmitting}
-                        onClick={() => removeImage(img.id)}
-                        aria-label={`Remove ${img.name}`}
-                        className="absolute top-2 right-2 w-7 h-7 rounded-full bg-white/95 border border-[#D4D4D3] text-[#0A0A0A] hover:bg-[#0A0A0A] hover:text-white inline-flex items-center justify-center cursor-pointer transition-colors"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
-
-                      {/* Upload progress overlay */}
-                      {img.status === 'uploading' && (
-                        <div className="absolute inset-x-0 bottom-0 bg-[#0A0A0A]/85 text-white px-2.5 py-2 flex flex-col gap-1">
-                          <div className="flex justify-between text-[11px] font-medium">
-                            <span>Uploading...</span>
-                            <span className="tabular-nums">{img.progress}%</span>
-                          </div>
-                          <div className="h-1.5 rounded-full bg-white/25 overflow-hidden">
-                            <div
-                              className="h-full bg-white transition-all duration-150"
-                              style={{ width: `${img.progress}%` }}
-                            />
-                          </div>
-                        </div>
-                      )}
                     </div>
 
-                    <div className="p-2.5 flex flex-col gap-2 border-t border-[#ECECEB]">
-                      <div className="flex items-center justify-between gap-1 text-[11px] text-[#6A6A6A]">
+                    {/* Clean Card Metadata & Actions Footer */}
+                    <div className="p-3 flex flex-col gap-2.5 flex-1 justify-between">
+                      <div className="flex items-center justify-between gap-2 text-[11.5px] text-[#6A6A6A]">
                         <span className="truncate font-medium text-[#0A0A0A]">
                           {img.name}
                         </span>
                         {img.sizeBytes ? (
-                          <span className="shrink-0 tabular-nums">
+                          <span className="shrink-0 font-mono text-[10.5px] tabular-nums text-[#6A6A6A]">
                             {formatBytes(img.sizeBytes)}
                           </span>
                         ) : null}
                       </div>
 
                       {img.error && (
-                        <div className="flex flex-col gap-1">
-                          <span className="text-[11px] text-[#B91C1C] leading-snug">
+                        <div className="flex flex-col gap-1 rounded-lg bg-[#FEF2F2] border border-[#FECACA] px-2.5 py-2">
+                          <span className="text-[11px] text-[#991B1B] leading-snug">
                             {img.error}
                           </span>
                           {img.file && (
@@ -1640,7 +1723,7 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
                         </div>
                       )}
 
-                      <div className="flex items-center justify-between gap-1">
+                      <div className="flex items-center justify-between gap-2 pt-1.5 border-t border-[#F0EFEA]">
                         {isPrimary ? (
                           <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#0A0A0A]">
                             <Star className="h-3 w-3 fill-[#0A0A0A]" /> Main Photo
@@ -1650,7 +1733,7 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
                             type="button"
                             disabled={isSubmitting}
                             onClick={() => setAsPrimaryImage(img.id)}
-                            className="text-[11px] font-semibold text-[#0A0A0A] underline underline-offset-2 hover:opacity-70 cursor-pointer"
+                            className="text-[11px] font-semibold text-[#0A0A0A] hover:underline underline-offset-2 cursor-pointer"
                           >
                             Set Primary
                           </button>
@@ -1662,7 +1745,7 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
                             disabled={idx === 0 || isSubmitting}
                             onClick={() => moveImage(idx, -1)}
                             aria-label="Move image left"
-                            className="w-6 h-6 rounded border border-[#D4D4D3] bg-white inline-flex items-center justify-center disabled:opacity-35 cursor-pointer"
+                            className="w-7 h-7 rounded-lg border border-[#D4D4D3] bg-[#FAFAFA] hover:bg-white inline-flex items-center justify-center disabled:opacity-35 cursor-pointer transition-colors"
                           >
                             <ArrowLeft className="h-3 w-3" />
                           </button>
@@ -1671,7 +1754,7 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
                             disabled={idx === images.length - 1 || isSubmitting}
                             onClick={() => moveImage(idx, 1)}
                             aria-label="Move image right"
-                            className="w-6 h-6 rounded border border-[#D4D4D3] bg-white inline-flex items-center justify-center disabled:opacity-35 cursor-pointer"
+                            className="w-7 h-7 rounded-lg border border-[#D4D4D3] bg-[#FAFAFA] hover:bg-white inline-flex items-center justify-center disabled:opacity-35 cursor-pointer transition-colors"
                           >
                             <ArrowRight className="h-3 w-3" />
                           </button>

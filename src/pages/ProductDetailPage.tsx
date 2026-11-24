@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   BadgeCheck,
@@ -15,12 +15,17 @@ import {
   RotateCcw,
   Ruler,
   Share2,
+  ShoppingBag,
   Star,
   Truck,
   X,
 } from 'lucide-react';
+import { collection, doc, getDoc, getDocs, query, where } from 'firebase/firestore';
 import { useStore } from '../context/StoreContext';
-import { handleCloudMediaImageError } from '../lib/cloudMediaFallback';
+import { Product } from '../types/ecommerce';
+import { db } from '../lib/firebase';
+import { normalizeProductMedia } from '../config/storeConfig';
+import { CloudMediaImage } from '../components/CloudMediaImage';
 import {
   calculateDiscountPercent,
   formatBDT,
@@ -41,6 +46,8 @@ export const ProductDetailPage: React.FC = () => {
   const navigate = useNavigate();
   const {
     products,
+    adminProducts,
+    isAdminAuthenticated,
     productsLoading,
     productsError,
     refreshProducts,
@@ -55,12 +62,94 @@ export const ProductDetailPage: React.FC = () => {
     showToast,
   } = useStore();
 
-  const product = useMemo(
-    () => products.find((p) => p.slug === slug || p.id === slug) || null,
-    [products, slug]
-  );
+  const decodedSlug = useMemo(() => {
+    if (!slug) return '';
+    try {
+      return decodeURIComponent(slug).trim();
+    } catch {
+      return slug.trim();
+    }
+  }, [slug]);
 
-  // Put primaryImage first, followed by unique gallery images
+  const [directProduct, setDirectProduct] = useState<Product | null>(null);
+  const [directLookupLoading, setDirectLookupLoading] = useState(false);
+
+  const catalogMatch = useMemo(() => {
+    if (!decodedSlug) return null;
+    const pool = isAdminAuthenticated ? [...products, ...adminProducts] : products;
+    const lower = decodedSlug.toLowerCase();
+    return (
+      pool.find((p) => p.slug === decodedSlug || p.id === decodedSlug || p.sku === decodedSlug) ||
+      pool.find(
+        (p) =>
+          p.slug.toLowerCase() === lower ||
+          p.id.toLowerCase() === lower ||
+          p.sku.toLowerCase() === lower
+      ) ||
+      null
+    );
+  }, [products, adminProducts, isAdminAuthenticated, decodedSlug]);
+
+  useEffect(() => {
+    setDirectProduct(null);
+    if (!decodedSlug || catalogMatch || productsLoading) {
+      setDirectLookupLoading(false);
+      return;
+    }
+
+    let active = true;
+    setDirectLookupLoading(true);
+
+    const lookupDirect = async () => {
+      try {
+        // 1. Check backend single-product route if available
+        const res = await fetch(apiUrl(`/api/products/${encodeURIComponent(decodedSlug)}`), {
+          cache: 'no-store',
+        }).catch(() => null);
+        const ct = res?.headers.get('content-type') || '';
+        if (res && res.ok && ct.toLowerCase().includes('application/json')) {
+          const data = (await res.json()) as { product?: Product };
+          if (data?.product && active) {
+            setDirectProduct(normalizeProductMedia(data.product));
+            return;
+          }
+        }
+
+        // 2. Fallback to direct Firestore lookup by slug or doc ID (ensures live/static direct links always resolve)
+        const slugQuery = isAdminAuthenticated
+          ? query(collection(db, 'products'), where('slug', '==', decodedSlug))
+          : query(
+              collection(db, 'products'),
+              where('slug', '==', decodedSlug),
+              where('status', '==', 'Published')
+            );
+        const slugSnap = await getDocs(slugQuery).catch(() => null);
+        if (slugSnap && !slugSnap.empty && active) {
+          setDirectProduct(normalizeProductMedia(slugSnap.docs[0].data() as Product));
+          return;
+        }
+
+        const docSnap = await getDoc(doc(db, 'products', decodedSlug)).catch(() => null);
+        if (docSnap && docSnap.exists() && active) {
+          const data = docSnap.data() as Product;
+          if (data.status === 'Published' || isAdminAuthenticated) {
+            setDirectProduct(normalizeProductMedia(data));
+          }
+        }
+      } finally {
+        if (active) setDirectLookupLoading(false);
+      }
+    };
+
+    void lookupDirect();
+    return () => {
+      active = false;
+    };
+  }, [decodedSlug, catalogMatch, productsLoading, isAdminAuthenticated]);
+
+  const product = catalogMatch || directProduct;
+
+  // Put primaryImage first, followed by all unique gallery images in saved order
   const galleryImages = useMemo(() => {
     if (!product) return [];
     const base = (product.images || []).filter(Boolean);
@@ -70,10 +159,26 @@ export const ProductDetailPage: React.FC = () => {
         : product.primaryImage
         ? [product.primaryImage, ...base]
         : base;
-    return Array.from(new Set(ordered)).slice(0, 8);
+    return Array.from(new Set(ordered)).slice(0, 20);
   }, [product]);
 
+  const [failedImageUrls, setFailedImageUrls] = useState<Record<string, boolean>>({});
+  const handleImageFailed = useCallback((failedUrl: string) => {
+    setFailedImageUrls((prev) => (prev[failedUrl] ? prev : { ...prev, [failedUrl]: true }));
+  }, []);
+
+  const visibleGalleryImages = useMemo(
+    () => galleryImages.filter((url) => !failedImageUrls[url]),
+    [galleryImages, failedImageUrls]
+  );
+
   const [activeImageIdx, setActiveImageIdx] = useState(0);
+  const safeImageIdx =
+    visibleGalleryImages.length > 0
+      ? Math.min(activeImageIdx, visibleGalleryImages.length - 1)
+      : 0;
+  const activeImageSrc = visibleGalleryImages[safeImageIdx] || '';
+
   const [showingVideo, setShowingVideo] = useState(false);
   const [zoomed, setZoomed] = useState(false);
   const [fullscreenOpen, setFullscreenOpen] = useState(false);
@@ -120,16 +225,26 @@ export const ProductDetailPage: React.FC = () => {
   const lastTrackedProductIdRef = useRef<string | null>(null);
 
   useEffect(() => {
+    setFailedImageUrls({});
+    setActiveImageIdx(0);
+    setShowingVideo(false);
+    setZoomed(false);
+  }, [product?.id]);
+
+  useEffect(() => {
+    if (activeImageIdx > 0 && activeImageIdx >= visibleGalleryImages.length && visibleGalleryImages.length > 0) {
+      setActiveImageIdx(0);
+    }
+  }, [activeImageIdx, visibleGalleryImages.length]);
+
+  useEffect(() => {
     if (!product) return;
     if (lastTrackedProductIdRef.current === product.id) return;
     lastTrackedProductIdRef.current = product.id;
 
-    setActiveImageIdx(0);
-    setShowingVideo(false);
     setSelectedColor(product.colors[0]?.name || '');
     setSelectedSize(product.sizes[0] || '');
     setQuantity(1);
-    setZoomed(false);
     trackPixelEvent('ViewContent', {
       content_name: product.name,
       content_ids: [product.id],
@@ -150,10 +265,11 @@ export const ProductDetailPage: React.FC = () => {
   const touchStartRef = useRef<{ x: number; y: number } | null>(null);
 
   if (!product) {
+    const stillFetching = productsLoading || directLookupLoading;
     return (
       <main className="mx-auto max-w-[1400px] px-4 sm:px-6 py-12 sm:py-16 text-center space-y-4">
         <h1 className="font-editorial text-2xl font-bold text-[#0A0A0A]">
-          {productsLoading
+          {stillFetching
             ? 'Loading products...'
             : productsError
               ? 'Unable to load products. Please try again.'
@@ -162,7 +278,7 @@ export const ProductDetailPage: React.FC = () => {
                 : 'Product not found'}
         </h1>
         <p className="text-sm text-[#5C5C5C]">
-          {productsLoading
+          {stillFetching
             ? 'Fetching the latest catalog items.'
             : productsError
               ? productsError
@@ -178,7 +294,7 @@ export const ProductDetailPage: React.FC = () => {
           >
             Retry
           </button>
-        ) : !productsLoading ? (
+        ) : !stillFetching ? (
           <Link
             to="/shop"
             className="btn-base btn-primary"
@@ -312,6 +428,18 @@ export const ProductDetailPage: React.FC = () => {
         }}
       />
 
+      {/* Admin Preview Status Notice when viewing non-Published product */}
+      {isAdminAuthenticated && product.status !== 'Published' && (
+        <div className="mb-4 rounded-xl bg-[#0A0A0A] text-white px-4 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs">
+          <span className="font-mono uppercase tracking-wider">
+            Admin Preview · Status: {product.status} (Hidden from public storefront)
+          </span>
+          <Link to="/admin" className="underline underline-offset-2 font-semibold">
+            Back to Admin Panel
+          </Link>
+        </div>
+      )}
+
       {/* Breadcrumb */}
       {(() => {
         const matchedCat = findCategoryByIdentifier(categories, product.category);
@@ -356,7 +484,7 @@ export const ProductDetailPage: React.FC = () => {
               }
             }}
             onTouchEnd={(e) => {
-              if (!touchStartRef.current || galleryImages.length <= 1 || showingVideo) return;
+              if (!touchStartRef.current || visibleGalleryImages.length <= 1 || showingVideo) return;
               const touch = e.changedTouches[0];
               const dx = touch.clientX - touchStartRef.current.x;
               const dy = touch.clientY - touchStartRef.current.y;
@@ -365,12 +493,12 @@ export const ProductDetailPage: React.FC = () => {
                 setZoomed(false);
                 setActiveImageIdx((i) =>
                   dx < 0
-                    ? (i + 1) % galleryImages.length
-                    : (i - 1 + galleryImages.length) % galleryImages.length
+                    ? (i + 1) % visibleGalleryImages.length
+                    : (i - 1 + visibleGalleryImages.length) % visibleGalleryImages.length
                 );
               }
             }}
-            className="relative aspect-[4/5] rounded-2xl sm:rounded-3xl bg-white border border-[#D9D9D9] navy-shadow overflow-hidden touch-pan-y"
+            className="relative aspect-[4/5] rounded-2xl sm:rounded-3xl bg-[#F7F6F2] border border-[#D9D9D9] navy-shadow overflow-hidden touch-pan-y"
           >
             {showingVideo && product.videoUrl ? (
               <video
@@ -380,22 +508,27 @@ export const ProductDetailPage: React.FC = () => {
                 autoPlay
                 className="h-full w-full object-contain bg-[#0A0A0A]"
               />
-            ) : (
-              <img
-                src={galleryImages[activeImageIdx] || product.primaryImage || product.images[0]}
-                alt={`${product.name} view ${activeImageIdx + 1}`}
-                referrerPolicy="no-referrer"
-                onError={(e) =>
-                  handleCloudMediaImageError(
-                    e.currentTarget,
-                    galleryImages[activeImageIdx] || product.primaryImage || product.images[0]
-                  )
-                }
+            ) : activeImageSrc ? (
+              <CloudMediaImage
+                key={`${product.id}-${activeImageSrc}`}
+                src={activeImageSrc}
+                alt={`${product.name} view ${safeImageIdx + 1}`}
+                onAllFailed={handleImageFailed}
                 onClick={() => setZoomed((z) => !z)}
-                className={`h-full w-full object-cover transition-transform duration-300 cursor-zoom-in ${
+                className={`h-full w-full object-cover object-center transition-transform duration-300 cursor-zoom-in ${
                   zoomed ? 'scale-125 cursor-zoom-out' : 'scale-100'
                 }`}
               />
+            ) : (
+              <div className="flex h-full w-full flex-col items-center justify-center bg-[#EAE9E4] p-8 text-center">
+                <ShoppingBag className="h-10 w-10 text-[#5C5C5C] mb-3" strokeWidth={1.4} />
+                <span className="font-editorial text-lg font-bold text-[#0A0A0A]">
+                  {product.name}
+                </span>
+                <span className="mt-1 font-mono text-xs text-[#5C5C5C]">
+                  {product.sku}
+                </span>
+              </div>
             )}
 
             {discountPct > 0 && !showingVideo && (
@@ -404,7 +537,7 @@ export const ProductDetailPage: React.FC = () => {
               </span>
             )}
 
-            {!showingVideo && (
+            {!showingVideo && activeImageSrc && (
               <button
                 type="button"
                 onClick={() => setFullscreenOpen(true)}
@@ -415,12 +548,14 @@ export const ProductDetailPage: React.FC = () => {
               </button>
             )}
 
-            {galleryImages.length > 1 && !showingVideo && (
+            {visibleGalleryImages.length > 1 && !showingVideo && (
               <>
                 <button
                   type="button"
                   onClick={() =>
-                    setActiveImageIdx((i) => (i - 1 + galleryImages.length) % galleryImages.length)
+                    setActiveImageIdx(
+                      (i) => (i - 1 + visibleGalleryImages.length) % visibleGalleryImages.length
+                    )
                   }
                   aria-label="Previous image"
                   className="btn-base btn-icon !min-h-[44px] !min-w-[44px] absolute left-2.5 sm:left-3.5 top-1/2 -translate-y-1/2 frosted-glass border border-[#D4D3CE] text-[#0A0A0A] hover:border-[#0A0A0A]"
@@ -429,7 +564,9 @@ export const ProductDetailPage: React.FC = () => {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setActiveImageIdx((i) => (i + 1) % galleryImages.length)}
+                  onClick={() =>
+                    setActiveImageIdx((i) => (i + 1) % visibleGalleryImages.length)
+                  }
                   aria-label="Next image"
                   className="btn-base btn-icon !min-h-[44px] !min-w-[44px] absolute right-2.5 sm:right-3.5 top-1/2 -translate-y-1/2 frosted-glass border border-[#D4D3CE] text-[#0A0A0A] hover:border-[#0A0A0A]"
                 >
@@ -440,75 +577,78 @@ export const ProductDetailPage: React.FC = () => {
           </div>
 
           {/* Mobile Pagination Dots & Counter */}
-          {galleryImages.length > 1 && !showingVideo && (
+          {visibleGalleryImages.length > 1 && !showingVideo && (
             <div className="flex lg:hidden items-center justify-between px-1">
               <div className="flex items-center gap-1.5" role="tablist" aria-label="Product gallery slides">
-                {galleryImages.map((_, idx) => (
+                {visibleGalleryImages.map((_, idx) => (
                   <button
                     key={`dot-${idx}`}
                     type="button"
                     aria-label={`View image ${idx + 1}`}
-                    aria-selected={activeImageIdx === idx}
+                    aria-selected={safeImageIdx === idx}
                     onClick={() => {
                       setShowingVideo(false);
                       setActiveImageIdx(idx);
                     }}
                     className={`h-2 rounded-full transition-all cursor-pointer ${
-                      activeImageIdx === idx ? 'w-5 bg-[#0A0A0A]' : 'w-2 bg-[#BDBDBD]'
+                      safeImageIdx === idx ? 'w-5 bg-[#0A0A0A]' : 'w-2 bg-[#BDBDBD]'
                     }`}
                   />
                 ))}
               </div>
               <span className="font-mono text-[11px] font-semibold text-[#5C5C5C] tabular-nums">
-                {activeImageIdx + 1} / {galleryImages.length}
+                {safeImageIdx + 1} / {visibleGalleryImages.length}
               </span>
             </div>
           )}
 
-          <div className="flex lg:grid lg:grid-cols-5 gap-2.5 lg:gap-3 overflow-x-auto no-scrollbar pb-1">
-            {galleryImages.map((img, idx) => (
-              <button
-                key={`${img}-${idx}`}
-                type="button"
-                onClick={() => {
-                  setShowingVideo(false);
-                  setActiveImageIdx(idx);
-                }}
-                aria-label={`Select image ${idx + 1}`}
-                className={`w-16 sm:w-20 lg:w-auto shrink-0 aspect-square rounded-xl lg:rounded-2xl overflow-hidden border-2 transition-all cursor-pointer ${
-                  !showingVideo && activeImageIdx === idx
-                    ? 'border-[#0A0A0A] shadow-md scale-[0.98]'
-                    : 'border-[#D9D9D9] opacity-75 hover:opacity-100'
-                }`}
-              >
-                <img
-                  src={img}
-                  alt=""
-                  referrerPolicy="no-referrer"
-                  className="h-full w-full object-cover"
-                />
-              </button>
-            ))}
-            {product.videoUrl && (
-              <button
-                type="button"
-                onClick={() => {
-                  setZoomed(false);
-                  setShowingVideo(true);
-                }}
-                className={`w-16 sm:w-20 lg:w-auto shrink-0 aspect-square rounded-xl lg:rounded-2xl overflow-hidden border-2 bg-[#0A0A0A] text-white flex flex-col items-center justify-center gap-1 transition-all cursor-pointer ${
-                  showingVideo
-                    ? 'border-[#0A0A0A] shadow-md scale-[0.98]'
-                    : 'border-[#D9D9D9] opacity-85 hover:opacity-100'
-                }`}
-              >
-                <Film className="h-5 w-5" />
-                <span className="font-mono text-[10px] font-bold uppercase tracking-wider">
-                  Video
-                </span>
-              </button>
-            )}
-          </div>
+          {/* Rounded-Rectangle Portrait Thumbnail Strip */}
+          {(visibleGalleryImages.length > 0 || product.videoUrl) && (
+            <div className="flex lg:grid lg:grid-cols-5 gap-2.5 lg:gap-3 overflow-x-auto no-scrollbar pb-1">
+              {visibleGalleryImages.map((img, idx) => (
+                <button
+                  key={`${img}-${idx}`}
+                  type="button"
+                  onClick={() => {
+                    setShowingVideo(false);
+                    setActiveImageIdx(idx);
+                  }}
+                  aria-label={`Select image ${idx + 1}`}
+                  className={`w-16 sm:w-20 lg:w-auto shrink-0 aspect-[4/5] rounded-xl lg:rounded-2xl overflow-hidden border-2 bg-[#EAE9E4] transition-all cursor-pointer ${
+                    !showingVideo && safeImageIdx === idx
+                      ? 'border-[#0A0A0A] shadow-md scale-[0.98]'
+                      : 'border-[#D9D9D9] opacity-80 hover:opacity-100'
+                  }`}
+                >
+                  <CloudMediaImage
+                    src={img}
+                    alt={`${product.name} thumbnail ${idx + 1}`}
+                    onAllFailed={handleImageFailed}
+                    className="h-full w-full object-cover object-center"
+                  />
+                </button>
+              ))}
+              {product.videoUrl && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setZoomed(false);
+                    setShowingVideo(true);
+                  }}
+                  className={`w-16 sm:w-20 lg:w-auto shrink-0 aspect-[4/5] rounded-xl lg:rounded-2xl overflow-hidden border-2 bg-[#0A0A0A] text-white flex flex-col items-center justify-center gap-1 transition-all cursor-pointer ${
+                    showingVideo
+                      ? 'border-[#0A0A0A] shadow-md scale-[0.98]'
+                      : 'border-[#D9D9D9] opacity-85 hover:opacity-100'
+                  }`}
+                >
+                  <Film className="h-5 w-5" />
+                  <span className="font-mono text-[10px] font-bold uppercase tracking-wider">
+                    Video
+                  </span>
+                </button>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Right (5 Cols): Purchase Module */}
@@ -972,21 +1112,63 @@ export const ProductDetailPage: React.FC = () => {
       </div>
 
       {/* Full-Screen Gallery Lightbox */}
-      {fullscreenOpen && (
-        <div className="fixed inset-0 z-[100] bg-[#0A0A0A]/95 flex items-center justify-center p-4 backdrop-enter">
+      {fullscreenOpen && activeImageSrc && (
+        <div
+          className="fixed inset-0 z-[100] bg-[#0A0A0A]/95 flex items-center justify-center p-4 backdrop-enter"
+          onClick={() => setFullscreenOpen(false)}
+        >
           <button
             type="button"
             onClick={() => setFullscreenOpen(false)}
             aria-label="Close full-screen image"
-            className="btn-base btn-dark-ghost btn-icon absolute top-5 right-5"
+            className="btn-base btn-dark-ghost btn-icon absolute top-5 right-5 z-20"
           >
             <X className="h-5 w-5" />
           </button>
-          <img
-            src={galleryImages[activeImageIdx] || product.images[0]}
-            alt={product.name}
-            className="max-h-[88vh] max-w-full rounded-2xl object-contain modal-enter"
-          />
+
+          {visibleGalleryImages.length > 1 && (
+            <>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setActiveImageIdx(
+                    (i) => (i - 1 + visibleGalleryImages.length) % visibleGalleryImages.length
+                  );
+                }}
+                aria-label="Previous image"
+                className="btn-base btn-dark-ghost btn-icon absolute left-4 top-1/2 -translate-y-1/2 z-20"
+              >
+                <ChevronLeft className="h-5 w-5" />
+              </button>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setActiveImageIdx((i) => (i + 1) % visibleGalleryImages.length);
+                }}
+                aria-label="Next image"
+                className="btn-base btn-dark-ghost btn-icon absolute right-4 top-1/2 -translate-y-1/2 z-20"
+              >
+                <ChevronRight className="h-5 w-5" />
+              </button>
+            </>
+          )}
+
+          <div onClick={(e) => e.stopPropagation()} className="flex flex-col items-center gap-3">
+            <CloudMediaImage
+              key={`lightbox-${product.id}-${activeImageSrc}`}
+              src={activeImageSrc}
+              alt={`${product.name} full-screen view ${safeImageIdx + 1}`}
+              onAllFailed={handleImageFailed}
+              className="max-h-[84vh] max-w-full rounded-2xl object-contain modal-enter"
+            />
+            {visibleGalleryImages.length > 1 && (
+              <span className="font-mono text-xs text-white/75 tabular-nums">
+                {safeImageIdx + 1} / {visibleGalleryImages.length}
+              </span>
+            )}
+          </div>
         </div>
       )}
 

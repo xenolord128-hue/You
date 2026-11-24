@@ -1780,6 +1780,14 @@ export const AdminPage: React.FC = () => {
                             >
                               Edit
                             </button>
+                            <Link
+                              to={`/product/${p.slug}`}
+                              title="Open product detail preview"
+                              aria-label={`Preview ${p.name}`}
+                              className="admin-btn admin-btn-sm"
+                            >
+                              <ExternalLink className="h-3 w-3" />
+                            </Link>
                             <button
                               type="button"
                               title="Duplicate as Draft"
@@ -2194,8 +2202,11 @@ export const AdminPage: React.FC = () => {
                               <img
                                 src={cat.image}
                                 alt={cat.name}
-                                onError={() =>
-                                  setBrokenImages((prev) => ({ ...prev, [`cat-${cat.id}`]: true }))
+                                referrerPolicy="no-referrer"
+                                onError={(e) =>
+                                  handleCloudMediaImageError(e.currentTarget, cat.image, () =>
+                                    setBrokenImages((prev) => ({ ...prev, [`cat-${cat.id}`]: true }))
+                                  )
                                 }
                                 className="absolute inset-0 w-full h-full object-cover"
                               />
@@ -2457,8 +2468,11 @@ export const AdminPage: React.FC = () => {
                         <img
                           src={c.hero_image}
                           alt={c.title}
-                          onError={() =>
-                            setBrokenImages((prev) => ({ ...prev, [`col-${c.id}`]: true }))
+                          referrerPolicy="no-referrer"
+                          onError={(e) =>
+                            handleCloudMediaImageError(e.currentTarget, c.hero_image, () =>
+                              setBrokenImages((prev) => ({ ...prev, [`col-${c.id}`]: true }))
+                            )
                           }
                           className="w-full h-full object-cover"
                         />
@@ -2854,6 +2868,12 @@ export const AdminPage: React.FC = () => {
                         src={resolveBundledMediaUrl(heroImageUrl.trim(), EDITORIAL_MEDIA.heroCampaign)}
                         alt="Desktop homepage hero banner preview"
                         referrerPolicy="no-referrer"
+                        onError={(e) =>
+                          handleCloudMediaImageError(
+                            e.currentTarget,
+                            e.currentTarget.getAttribute('src') || ''
+                          )
+                        }
                         className="h-full w-full object-cover object-[62%_20%]"
                       />
                       <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/75 via-black/25 to-transparent p-3.5 flex items-center justify-between">
@@ -2996,6 +3016,12 @@ export const AdminPage: React.FC = () => {
                         src={resolveBundledMediaUrl(mobileHeroImageUrl.trim(), MOBILE_HERO_CAMPAIGN_URL)}
                         alt="Mobile homepage hero banner preview"
                         referrerPolicy="no-referrer"
+                        onError={(e) =>
+                          handleCloudMediaImageError(
+                            e.currentTarget,
+                            e.currentTarget.getAttribute('src') || ''
+                          )
+                        }
                         className="h-full w-full object-cover object-[50%_40%]"
                       />
                       <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/45 to-transparent p-2.5 flex items-center justify-between gap-2">

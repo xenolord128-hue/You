@@ -14,6 +14,7 @@ import { Product } from '../types/ecommerce';
 import { BRAND_LOGO_URL } from '../config/storeConfig';
 import { formatBDT } from '../lib/formatters';
 import { useStore } from '../context/StoreContext';
+import { CloudMediaImage } from './CloudMediaImage';
 
 interface ProductQrModalProps {
   open: boolean;
@@ -259,11 +260,14 @@ export const ProductQrModal: React.FC<ProductQrModalProps> = ({
           {tab === 'share' ? (
             <div className="space-y-4">
               <div className="flex items-center gap-3.5 p-3 rounded-xl bg-white border border-[#D9D9D9]">
-                <img
-                  src={product.images[0]}
-                  alt={product.name}
-                  className="h-16 w-16 rounded-lg object-cover shrink-0 bg-[#EAE9E4]"
-                />
+                <div className="w-16 aspect-[4/5] rounded-xl overflow-hidden bg-[#EAE9E4] shrink-0">
+                  <CloudMediaImage
+                    src={product.primaryImage || product.images[0]}
+                    alt={product.name}
+                    fallback={<div className="h-full w-full bg-[#EAE9E4]" />}
+                    className="h-full w-full object-cover object-center"
+                  />
+                </div>
                 <div className="min-w-0">
                   <p className="font-mono text-[10px] uppercase tracking-wider text-[#5C5C5C]">
                     {product.category}

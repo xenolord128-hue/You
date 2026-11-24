@@ -145,23 +145,30 @@ export const HomePage: React.FC = () => {
     setBrokenImg((prev) => (prev.mobileHero ? { ...prev, mobileHero: false } : prev));
   }, [resolvedPrimaryMobileHero]);
 
-  const handleHeroImgError = () => {
+  const handleHeroImgError = (e: React.SyntheticEvent<HTMLImageElement>) => {
+    const imgEl = e.currentTarget;
     const isMobile =
       typeof window !== 'undefined' &&
       window.matchMedia('(max-width: 767px)').matches;
-    if (isMobile) {
-      if (!mobileHeroUseFallback && mobileHeroImgSrc !== MOBILE_HERO_CAMPAIGN_FALLBACK_URL) {
-        setMobileHeroUseFallback(true);
+    const activeSrc = isMobile ? mobileHeroImgSrc : heroImgSrc;
+
+    const triggerCampaignFallback = () => {
+      if (isMobile) {
+        if (!mobileHeroUseFallback && mobileHeroImgSrc !== MOBILE_HERO_CAMPAIGN_FALLBACK_URL) {
+          setMobileHeroUseFallback(true);
+          return;
+        }
+        markBroken('hero');
+        return;
+      }
+      if (!heroUseFallback && heroImgSrc !== HERO_CAMPAIGN_FALLBACK_URL) {
+        setHeroUseFallback(true);
         return;
       }
       markBroken('hero');
-      return;
-    }
-    if (!heroUseFallback && heroImgSrc !== HERO_CAMPAIGN_FALLBACK_URL) {
-      setHeroUseFallback(true);
-      return;
-    }
-    markBroken('hero');
+    };
+
+    handleCloudMediaImageError(imgEl, activeSrc, triggerCampaignFallback);
   };
 
   const markBroken = (id: string) => {

@@ -41,6 +41,7 @@ import {
 } from '../config/storeConfig';
 import { SeoHead } from '../components/SeoHead';
 import { AdminProductUploadForm } from '../components/AdminProductUploadForm';
+import { productCodeSearchKey } from '../lib/productCode';
 import {
   countProductsInCategory,
   getSortedCategories,
@@ -292,6 +293,7 @@ export const AdminPage: React.FC = () => {
   // Product editor & search/filter state
   const [editingProductId, setEditingProductId] = useState<string | null>(null);
   const [prodSearch, setProdSearch] = useState('');
+  const [invSearch, setInvSearch] = useState('');
   const [prodStatusFilter, setProdStatusFilter] = useState<'All' | ProductStatus>('All');
   const [prodCategoryFilter, setProdCategoryFilter] = useState<string>('All');
   const [brokenImages, setBrokenImages] = useState<Record<string, boolean>>({});
@@ -569,7 +571,8 @@ export const AdminPage: React.FC = () => {
 
   const filteredAdminProducts = useMemo(() => {
     const q = prodSearch.trim().toLowerCase();
-    return adminProducts.filter((p) => {
+    const qCompact = productCodeSearchKey(prodSearch);
+    const list = adminProducts.filter((p) => {
       if (prodStatusFilter !== 'All' && p.status !== prodStatusFilter) return false;
       if (prodCategoryFilter !== 'All') {
         if (!productMatchesCategory(p, prodCategoryFilter, categories)) {
@@ -577,8 +580,14 @@ export const AdminPage: React.FC = () => {
         }
       }
       if (q) {
+        const skuLower = (p.sku || '').toLowerCase();
+        const skuCompact = productCodeSearchKey(p.sku);
+        const idLower = (p.id || '').toLowerCase();
         const inName = p.name.toLowerCase().includes(q);
-        const inSku = p.sku.toLowerCase().includes(q);
+        const inSku =
+          skuLower.includes(q) ||
+          idLower.includes(q) ||
+          (Boolean(qCompact) && skuCompact.includes(qCompact));
         const inCat =
           p.category.toLowerCase().includes(q) ||
           (p.additionalCategories || []).some((c) => c.toLowerCase().includes(q));
@@ -588,7 +597,33 @@ export const AdminPage: React.FC = () => {
       }
       return true;
     });
+
+    if (qCompact) {
+      return [...list].sort((a, b) => {
+        const aExact = productCodeSearchKey(a.sku) === qCompact ? 0 : 1;
+        const bExact = productCodeSearchKey(b.sku) === qCompact ? 0 : 1;
+        return aExact - bExact;
+      });
+    }
+    return list;
   }, [adminProducts, prodSearch, prodStatusFilter, prodCategoryFilter, categories]);
+
+  const filteredInventoryProducts = useMemo(() => {
+    const q = invSearch.trim().toLowerCase();
+    const qCompact = productCodeSearchKey(invSearch);
+    if (!q) return adminProducts;
+    return adminProducts.filter((p) => {
+      const skuLower = (p.sku || '').toLowerCase();
+      const skuCompact = productCodeSearchKey(p.sku);
+      return (
+        skuLower.includes(q) ||
+        (p.id || '').toLowerCase().includes(q) ||
+        (Boolean(qCompact) && skuCompact.includes(qCompact)) ||
+        p.name.toLowerCase().includes(q) ||
+        p.category.toLowerCase().includes(q)
+      );
+    });
+  }, [adminProducts, invSearch]);
 
   // 1) Loading state
   if (!authReady) {
@@ -1573,15 +1608,25 @@ export const AdminPage: React.FC = () => {
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2.5 w-full lg:w-auto">
-                  <div className="relative flex-1 sm:w-56">
+                  <div className="relative flex-1 sm:w-64">
                     <Search className="h-3.5 w-3.5 text-[#6A6A6A] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                     <input
                       type="text"
                       value={prodSearch}
                       onChange={(e) => setProdSearch(e.target.value)}
-                      placeholder="Search name, SKU, tag..."
-                      className="admin-inp admin-inp-sm !pl-8"
+                      placeholder="Search product code, name, tag..."
+                      className="admin-inp admin-inp-sm !pl-8 !pr-7"
                     />
+                    {prodSearch && (
+                      <button
+                        type="button"
+                        onClick={() => setProdSearch('')}
+                        aria-label="Clear search"
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#6A6A6A] hover:text-[#0A0A0A] cursor-pointer"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    )}
                   </div>
                   <select
                     aria-label="Filter by product status"
@@ -1659,11 +1704,25 @@ export const AdminPage: React.FC = () => {
                             )}
                             <div className="flex flex-col gap-0.5 min-w-0">
                               <span className="font-medium truncate">{p.name}</span>
-                              <span className="admin-sub truncate">
-                                {p.sku} · {p.images?.length || 0} photo
-                                {(p.images?.length || 0) === 1 ? '' : 's'}
-                                {p.videoUrl ? ' · Video' : ''}
-                              </span>
+                              <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+                                <button
+                                  type="button"
+                                  title="Copy Product Code"
+                                  onClick={() => {
+                                    void navigator.clipboard?.writeText(p.sku);
+                                    showToast(`Product Code copied: ${p.sku}`);
+                                  }}
+                                  className="inline-flex items-center gap-1 rounded-[5px] bg-[#F1F1F0] border border-[#D4D4D3] px-1.5 py-0.5 font-mono text-[11px] font-semibold text-[#0A0A0A] hover:bg-[#E4E4E3] cursor-pointer"
+                                >
+                                  <span>{p.sku}</span>
+                                  <Copy className="h-2.5 w-2.5 text-[#6A6A6A]" />
+                                </button>
+                                <span className="admin-sub truncate">
+                                  {p.images?.length || 0} photo
+                                  {(p.images?.length || 0) === 1 ? '' : 's'}
+                                  {p.videoUrl ? ' · Video' : ''}
+                                </span>
+                              </div>
                             </div>
                           </div>
 
@@ -1756,11 +1815,33 @@ export const AdminPage: React.FC = () => {
         {/* ================= INVENTORY ================= */}
         {activeTab === 'inventory' && (
           <section className="admin-card overflow-hidden">
-            <div className="px-5 pt-5 pb-4 flex flex-wrap justify-between items-baseline gap-2">
-              <h2 className="text-[18px]">Stock Control</h2>
-              <span className="admin-sub">
-                {analytics.lowCountOnly} low, {analytics.outOfStockCount} out of stock
-              </span>
+            <div className="px-5 pt-5 pb-4 flex flex-wrap justify-between items-center gap-3">
+              <div className="flex flex-wrap items-baseline gap-2.5">
+                <h2 className="text-[18px]">Stock Control</h2>
+                <span className="admin-sub">
+                  {analytics.lowCountOnly} low, {analytics.outOfStockCount} out of stock
+                </span>
+              </div>
+              <div className="relative w-full sm:w-64">
+                <Search className="h-3.5 w-3.5 text-[#6A6A6A] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <input
+                  type="text"
+                  value={invSearch}
+                  onChange={(e) => setInvSearch(e.target.value)}
+                  placeholder="Search product code or name..."
+                  className="admin-inp admin-inp-sm !pl-8 !pr-7"
+                />
+                {invSearch && (
+                  <button
+                    type="button"
+                    onClick={() => setInvSearch('')}
+                    aria-label="Clear inventory search"
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#6A6A6A] hover:text-[#0A0A0A] cursor-pointer"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                )}
+              </div>
             </div>
             <div className="overflow-x-auto">
               <div className="min-w-[860px]">
@@ -1772,12 +1853,14 @@ export const AdminPage: React.FC = () => {
                   <span>Status</span>
                   <span>Quick Adjust</span>
                 </div>
-                {adminProducts.length === 0 ? (
+                {filteredInventoryProducts.length === 0 ? (
                   <div className="p-8 text-center text-[13px] text-[#6A6A6A]">
-                    No products available in inventory yet.
+                    {adminProducts.length === 0
+                      ? 'No products available in inventory yet.'
+                      : 'No products match that Product Code or search term.'}
                   </div>
                 ) : (
-                  adminProducts.map((p) => {
+                  filteredInventoryProducts.map((p) => {
                     const statusKey =
                       p.inventory === 0
                         ? 'Out of Stock'

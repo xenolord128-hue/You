@@ -4,6 +4,7 @@ import {
   ArrowLeft,
   ArrowRight,
   CheckCircle2,
+  Copy,
   ImagePlus,
   Loader2,
   Plus,
@@ -34,6 +35,11 @@ import { handleCloudMediaImageError } from '../lib/cloudMediaFallback';
 import { useStore } from '../context/StoreContext';
 import { apiUrl } from '../lib/api';
 import { auth, isVerifiedAdminUser } from '../lib/firebase';
+import {
+  generateUniqueProductCode,
+  isProductCodeTaken,
+  normalizeProductCode,
+} from '../lib/productCode';
 
 const FALLBACK_CATEGORIES: ProductCategory[] = DEFAULT_CATEGORIES.map((c) => c.name);
 
@@ -122,9 +128,7 @@ function buildLocalEditorialCopy(
   };
 }
 
-function buildInitialSku(): string {
-  return `PW-MN-${Math.floor(100 + Math.random() * 899)}`;
-}
+// Product codes are generated via generateUniqueProductCode in ../lib/productCode
 
 function formatProductSubmitError(err: unknown): string {
   if (!(err instanceof Error)) {
@@ -159,7 +163,7 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
   onLinkCloudSync,
   linkingCloud = false,
 }) => {
-  const { adminSessionToken } = useStore();
+  const { adminSessionToken, adminProducts } = useStore();
   const defaultCategoryName =
     categories[0]?.name || FALLBACK_CATEGORIES[0];
 
@@ -182,7 +186,7 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
   const [draggedImageId, setDraggedImageId] = useState<string | null>(null);
 
   // STOREFRONT PRICING, CATEGORY, TAGS & STATUS DETAILS
-  const [sku, setSku] = useState<string>(() => buildInitialSku());
+  const [sku, setSku] = useState<string>(() => generateUniqueProductCode());
   const [category, setCategory] = useState<ProductCategory>(defaultCategoryName);
   const [additionalCategories, setAdditionalCategories] = useState<ProductCategory[]>([]);
   const [subcategory, setSubcategory] = useState('');
@@ -212,7 +216,10 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitStatusText, setSubmitStatusText] = useState('');
   const [submitProgress, setSubmitProgress] = useState(0);
-  const [successBanner, setSuccessBanner] = useState<string | null>(null);
+  const [successBanner, setSuccessBanner] = useState<{
+    message: string;
+    code: string;
+  } | null>(null);
 
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const imagesRef = useRef<MediaImageEntry[]>([]);
@@ -253,7 +260,7 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
     setDescription('');
     setImages([]);
     setPrimaryImageId('');
-    setSku(buildInitialSku());
+    setSku(generateUniqueProductCode(adminProducts));
     setCategory(categories[0]?.name || FALLBACK_CATEGORIES[0]);
     setAdditionalCategories([]);
     setSubcategory('');
@@ -305,7 +312,7 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
       setDescription('');
       setImages([]);
       setPrimaryImageId('');
-      setSku(buildInitialSku());
+      setSku(generateUniqueProductCode(adminProducts));
       setCategory(categories[0]?.name || FALLBACK_CATEGORIES[0]);
       setAdditionalCategories([]);
       setSubcategory('');
@@ -364,7 +371,7 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
     setImages(loadedImages);
     setPrimaryImageId(loadedImages[0]?.id || '');
 
-    setSku(editingProduct.sku || buildInitialSku());
+    setSku(editingProduct.sku || generateUniqueProductCode(adminProducts, editingProduct.id));
     const resolvedCat =
       findCategoryByIdentifier(categories, editingProduct.category)?.name ||
       editingProduct.category ||
@@ -733,7 +740,12 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
       next.description = 'Product Description is required.';
     if (images.length === 0)
       next.images = 'Upload at least one product image (JPG, PNG, or WEBP).';
-    if (!sku.trim()) next.sku = 'SKU / Product ID is required.';
+    if (!sku.trim()) {
+      next.sku = 'Product Code (SKU) is required.';
+    } else if (isProductCodeTaken(sku, adminProducts, editingProduct?.id)) {
+      next.sku =
+        'This Product Code is already used by another product. Enter a different code or click New Code.';
+    }
     if (!category.trim()) next.category = 'Product Category is required.';
 
     const numericPrice = Number(price);
@@ -905,10 +917,16 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
         .replace(/[^a-z0-9]+/g, '-')
         .replace(/^-|-$/g, '');
 
+      const requestedCode = normalizeProductCode(sku);
+      const uniqueFinalCode =
+        !editingProduct && (!requestedCode || isProductCodeTaken(requestedCode, adminProducts))
+          ? generateUniqueProductCode(adminProducts)
+          : requestedCode;
+
       const nowIso = new Date().toISOString();
       const payload: Product = {
         id: editingProduct?.id || `prod-${Date.now()}`,
-        sku: sku.trim().toUpperCase(),
+        sku: uniqueFinalCode,
         name: name.trim(),
         slug: editingProduct?.slug || slug || `product-${Date.now()}`,
         shortDescription: shortDescription.trim() || undefined,
@@ -952,20 +970,22 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
 
       if (editingProduct) {
         onCancelEdit();
-        setSuccessBanner(
-          `"${saved.name}" updated (${saved.status}).`
-        );
+        setSuccessBanner({
+          message: `"${saved.name}" updated (${saved.status}).`,
+          code: saved.sku,
+        });
       } else {
         clearForm(true);
-        setSuccessBanner(
-          `"${saved.name}" saved as ${saved.status} with ${saved.images.length} image${
+        setSuccessBanner({
+          message: `"${saved.name}" saved as ${saved.status} with ${saved.images.length} image${
             saved.images.length === 1 ? '' : 's'
           }.${
             saved.status === 'Published'
               ? ' It is now live on the public storefront.'
               : ' It remains hidden from the public storefront until published.'
-          }`
-        );
+          }`,
+          code: saved.sku,
+        });
       }
     } catch (err: unknown) {
       const msg = formatProductSubmitError(err);
@@ -1085,11 +1105,24 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
       {successBanner && (
         <div
           role="status"
-          className="admin-card px-5 py-4 !bg-[#0A0A0A] text-white !border-[#0A0A0A] flex items-center justify-between gap-3"
+          className="admin-card px-5 py-4 !bg-[#0A0A0A] text-white !border-[#0A0A0A] flex flex-wrap items-center justify-between gap-3"
         >
-          <div className="flex items-center gap-2.5 text-[13px] font-medium">
+          <div className="flex flex-wrap items-center gap-2.5 text-[13px] font-medium min-w-0">
             <CheckCircle2 className="h-4 w-4 shrink-0 text-white" />
-            <span>{successBanner}</span>
+            <span>{successBanner.message}</span>
+            <span className="inline-flex items-center gap-1.5 rounded-[7px] bg-white/15 border border-white/25 px-2.5 py-1 font-mono text-[12px] tracking-[0.06em] text-white">
+              Code: {successBanner.code}
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                void navigator.clipboard?.writeText(successBanner.code);
+                showToast(`Product Code copied: ${successBanner.code}`);
+              }}
+              className="inline-flex items-center gap-1 rounded-[7px] bg-white text-[#0A0A0A] px-2.5 py-1 text-[11.5px] font-semibold hover:bg-[#EAE9E4] cursor-pointer"
+            >
+              <Copy className="h-3 w-3" /> Copy Code
+            </button>
           </div>
           <button
             type="button"
@@ -1665,19 +1698,35 @@ export const AdminProductUploadForm: React.FC<AdminProductUploadFormProps> = ({
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           <div className="admin-fld">
-            <label className="admin-lbl" htmlFor="upload-prod-sku">
-              Product SKU / ID <span className="text-[#B91C1C]">*</span>
-            </label>
+            <div className="flex items-center justify-between gap-2">
+              <label className="admin-lbl" htmlFor="upload-prod-sku">
+                Product Code (SKU) <span className="text-[#B91C1C]">*</span>
+              </label>
+              <button
+                type="button"
+                disabled={isSubmitting}
+                onClick={() => {
+                  setSku(generateUniqueProductCode(adminProducts, editingProduct?.id));
+                  if (errors.sku) setErrors((prev) => ({ ...prev, sku: undefined }));
+                }}
+                className="text-[11px] font-medium text-[#0A0A0A] underline underline-offset-2 hover:opacity-70 inline-flex items-center gap-1 cursor-pointer"
+              >
+                <RefreshCw className="h-2.5 w-2.5" /> New Code
+              </button>
+            </div>
             <input
               id="upload-prod-sku"
-              className={`admin-inp uppercase ${errors.sku ? '!border-[#B91C1C]' : ''}`}
+              className={`admin-inp uppercase font-mono tracking-[0.04em] ${errors.sku ? '!border-[#B91C1C]' : ''}`}
               value={sku}
               onChange={(e) => {
-                setSku(e.target.value);
+                setSku(e.target.value.toUpperCase());
                 if (errors.sku) setErrors((prev) => ({ ...prev, sku: undefined }));
               }}
-              placeholder="PW-MN-101"
+              placeholder="PW-8K4M2N"
             />
+            <span className="text-[11px] text-[#6A6A6A]">
+              Unique code auto-assigned for Admin Panel search
+            </span>
             {errors.sku && (
               <span className="text-[12px] text-[#B91C1C] font-medium">{errors.sku}</span>
             )}

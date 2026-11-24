@@ -1,7 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { BrowserRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { MotionConfig } from 'motion/react';
-import { APIProvider } from '@vis.gl/react-google-maps';
 import { StoreProvider, useStore } from './context/StoreContext';
 import { sanitizePixelId } from './lib/formatters';
 import {
@@ -72,7 +71,7 @@ const QuotaBanner: React.FC<{ visible: boolean; onDismiss: () => void }> = ({
 };
 
 const AppShell: React.FC = () => {
-  const { mapsApiKey, settings, toast } = useStore();
+  const { settings, toast } = useStore();
   const location = useLocation();
   const isAdminRoute = location.pathname.startsWith('/admin');
   const isHomeRoute = location.pathname === '/' || location.pathname === '';
@@ -174,14 +173,6 @@ const AppShell: React.FC = () => {
       </div>
     </MotionConfig>
   );
-
-  if (mapsApiKey) {
-    return (
-      <APIProvider apiKey={mapsApiKey} language="en" region="BD">
-        {routes}
-      </APIProvider>
-    );
-  }
 
   return routes;
 };

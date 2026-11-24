@@ -9,7 +9,7 @@ import { BRAND_LOCATION } from '../config/storeConfig';
 import { sanitizeExternalHref } from '../lib/formatters';
 
 export const ContactPage: React.FC = () => {
-  const { settings, mapsApiKey, showToast } = useStore();
+  const { settings, showToast } = useStore();
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
@@ -241,17 +241,10 @@ export const ContactPage: React.FC = () => {
             </div>
           </div>
 
-          {mapsApiKey ? (
-            <BoutiqueLocatorMap heightClass="h-[340px]" />
-          ) : (
-            <div className="rounded-3xl border border-[#D9D9D9] bg-[#EAE9E4] p-6 space-y-2 text-xs text-[#292929]">
-              <p className="font-semibold uppercase tracking-[0.12em] text-[#0A0A0A]">
-                PYTHOX WORLD Flagship Showroom
-              </p>
-              <p>{BRAND_LOCATION}</p>
-              <p>Open Daily · 10:30 AM – 9:30 PM</p>
-            </div>
-          )}
+          <BoutiqueLocatorMap
+            businessAddress={settings.businessAddress || BRAND_LOCATION}
+            heightClass="h-[340px]"
+          />
         </div>
       </div>
     </main>

@@ -29,7 +29,10 @@ import {
   DhakaAddressAutocomplete,
   SelectedAddressResult,
 } from '../components/DhakaAddressAutocomplete';
-import { CustomerDeliveryMap } from '../components/BoutiqueLocatorMap';
+import {
+  CustomerDeliveryMap,
+  OrderLocationPreviewMap,
+} from '../components/BoutiqueLocatorMap';
 import { BrandLogo } from '../components/BrandLogo';
 import { SeoHead } from '../components/SeoHead';
 import { SuccessCheckmark } from '../components/Motion';
@@ -44,6 +47,7 @@ const EMAILJS_SERVICE_ID = 'service_jlw1nj9';
 const EMAILJS_TEMPLATE_ID = 'template_ytbv3oj';
 const EMAILJS_PUBLIC_KEY = 'mq7QXXen_i72fccjy';
 const CHECKOUT_DRAFT_KEY = 'pythox_checkout_draft_v1';
+const ORDER_PIN_STORAGE_KEY = 'pythox_order_pin_v1';
 
 const BD_DISTRICTS = [
   'Dhaka',
@@ -170,6 +174,7 @@ interface ConfirmedOrderView {
   postal_code: string;
   delivery_method: DeliveryMethod;
   delivery_note: string;
+  delivery_location?: { lat: number; lng: number; label: string } | null;
   expected_delivery: string;
   items: OrderItem[];
   payment_method: PaymentMethod;
@@ -205,7 +210,6 @@ export const CheckoutPage: React.FC = () => {
     cart,
     settings,
     appliedCoupon,
-    mapsApiKey,
     placeOrder,
     updateCartQuantity,
     applyCouponCode,
@@ -1018,6 +1022,25 @@ export const CheckoutPage: React.FC = () => {
         console.warn('EmailJS dispatch skipped or deferred:', emailErr);
       }
 
+      try {
+        if (deliveryLocation && typeof window !== 'undefined') {
+          const existingRaw = window.sessionStorage.getItem(ORDER_PIN_STORAGE_KEY);
+          const existingPins = existingRaw
+            ? (JSON.parse(existingRaw) as Record<
+                string,
+                { lat: number; lng: number; label: string }
+              >)
+            : {};
+          existingPins[authoritativeOrderId.toUpperCase()] = deliveryLocation;
+          window.sessionStorage.setItem(
+            ORDER_PIN_STORAGE_KEY,
+            JSON.stringify(existingPins)
+          );
+        }
+      } catch {
+        // ignore storage errors
+      }
+
       setConfirmedOrder({
         order_id: authoritativeOrderId,
         order_date: generatedOrderDate,
@@ -1031,6 +1054,7 @@ export const CheckoutPage: React.FC = () => {
         postal_code: cleanPostalCode,
         delivery_method: deliveryMethod,
         delivery_note: rawDeliveryNote,
+        delivery_location: deliveryLocation,
         expected_delivery: expectedDelivery,
         items: authoritativeItems,
         payment_method: paymentMethod,
@@ -1167,6 +1191,21 @@ export const CheckoutPage: React.FC = () => {
                 Total Payable: {formatBDT(confirmedOrder.total_amount)}
               </p>
             </div>
+          </div>
+
+          <div className="space-y-2">
+            <p className="inline-flex items-center gap-1.5 font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-[#5C5C5C]">
+              <MapPin className="h-3.5 w-3.5 text-[#0A0A0A]" />
+              <span>Confirmed Delivery Location on Map</span>
+            </p>
+            <OrderLocationPreviewMap
+              address={confirmedOrder.delivery_address}
+              area={confirmedOrder.area}
+              city={confirmedOrder.city}
+              postalCode={confirmedOrder.postal_code}
+              deliveryLocation={confirmedOrder.delivery_location}
+              heightClass="h-[210px] sm:h-[230px]"
+            />
           </div>
 
           {/* Ordered Items List */}
@@ -1456,44 +1495,22 @@ export const CheckoutPage: React.FC = () => {
                     >
                       Full Delivery Address *
                     </label>
-                    {mapsApiKey ? (
-                      <DhakaAddressAutocomplete
-                        value={deliveryAddress}
-                        onChange={(val) => {
-                          setDeliveryAddress(val);
-                          if (fieldErrors.delivery_address)
-                            setFieldErrors((p) => ({
-                              ...p,
-                              delivery_address: undefined,
-                            }));
-                        }}
-                        onSelectAddress={handleAddressAutocomplete}
-                      />
-                    ) : (
-                      <input
-                        id="delivery_address"
-                        name="delivery_address"
-                        type="text"
-                        required
-                        autoComplete="street-address"
-                        value={deliveryAddress}
-                        onChange={(e) => {
-                          setDeliveryAddress(e.target.value);
-                          if (fieldErrors.delivery_address)
-                            setFieldErrors((p) => ({
-                              ...p,
-                              delivery_address: undefined,
-                            }));
-                        }}
-                        aria-invalid={Boolean(fieldErrors.delivery_address)}
-                        placeholder="House, Road, Block, Apartment"
-                        className={`w-full min-h-[46px] rounded-xl border bg-white px-3.5 py-3 text-sm text-[#0A0A0A] placeholder:text-[#808080] focus:outline-none transition-colors ${
-                          fieldErrors.delivery_address
-                            ? 'border-[#0A0A0A] bg-[#F5F5F5]'
-                            : 'border-[#D9D9D9] focus:border-[#0A0A0A]'
-                        }`}
-                      />
-                    )}
+                    <DhakaAddressAutocomplete
+                      id="delivery_address"
+                      name="delivery_address"
+                      required
+                      hasError={Boolean(fieldErrors.delivery_address)}
+                      value={deliveryAddress}
+                      onChange={(val) => {
+                        setDeliveryAddress(val);
+                        if (fieldErrors.delivery_address)
+                          setFieldErrors((p) => ({
+                            ...p,
+                            delivery_address: undefined,
+                          }));
+                      }}
+                      onSelectAddress={handleAddressAutocomplete}
+                    />
                     {fieldErrors.delivery_address && (
                       <p className="mt-1 text-[11px] font-medium text-[#0A0A0A]">
                         {fieldErrors.delivery_address}
@@ -1692,46 +1709,44 @@ export const CheckoutPage: React.FC = () => {
                     />
                   </div>
 
-                  {mapsApiKey && (
-                    <div className="pt-2 space-y-2">
-                      <div className="flex items-center justify-between text-xs text-[#5C5C5C]">
-                        <span className="inline-flex items-center gap-1.5">
-                          <MapPin className="h-3.5 w-3.5 text-[#0A0A0A]" />
-                          {inDhaka
-                            ? `Inside Dhaka / Savar Zone (${formatBDT(settings.insideDhakaCharge)} standard)`
-                            : `Outside Dhaka Zone (${formatBDT(settings.outsideDhakaCharge)} standard)`}
+                  <div className="pt-2 space-y-2">
+                    <div className="flex items-center justify-between text-xs text-[#5C5C5C]">
+                      <span className="inline-flex items-center gap-1.5">
+                        <MapPin className="h-3.5 w-3.5 text-[#0A0A0A]" />
+                        {inDhaka
+                          ? `Inside Dhaka / Savar Zone (${formatBDT(settings.insideDhakaCharge)} standard)`
+                          : `Outside Dhaka Zone (${formatBDT(settings.outsideDhakaCharge)} standard)`}
+                      </span>
+                      {deliveryLocation && (
+                        <span className="font-mono text-[#0A0A0A]">
+                          Pin verified
                         </span>
-                        {deliveryLocation && (
-                          <span className="font-mono text-[#0A0A0A]">
-                            Pin verified
-                          </span>
-                        )}
-                      </div>
-                      <CustomerDeliveryMap
-                        address={deliveryAddress}
-                        area={area}
-                        city={city}
-                        postalCode={postalCode}
-                        deliveryLocation={deliveryLocation}
-                        onLocationChange={setDeliveryLocation}
-                        onReverseGeocodeAddress={(info) => {
-                          if (info.formattedAddress) {
-                            setDeliveryAddress(info.formattedAddress);
-                          }
-                          if (info.city) setCity(info.city);
-                          if (info.area) setArea(info.area);
-                          if (info.postalCode) setPostalCode(info.postalCode);
-                          setFieldErrors((p) => ({
-                            ...p,
-                            delivery_address: undefined,
-                            city: undefined,
-                            area: undefined,
-                          }));
-                        }}
-                        heightClass="h-[240px] sm:h-[260px]"
-                      />
+                      )}
                     </div>
-                  )}
+                    <CustomerDeliveryMap
+                      address={deliveryAddress}
+                      area={area}
+                      city={city}
+                      postalCode={postalCode}
+                      deliveryLocation={deliveryLocation}
+                      onLocationChange={setDeliveryLocation}
+                      onReverseGeocodeAddress={(info) => {
+                        if (info.formattedAddress) {
+                          setDeliveryAddress(info.formattedAddress);
+                        }
+                        if (info.city) setCity(info.city);
+                        if (info.area) setArea(info.area);
+                        if (info.postalCode) setPostalCode(info.postalCode);
+                        setFieldErrors((p) => ({
+                          ...p,
+                          delivery_address: undefined,
+                          city: undefined,
+                          area: undefined,
+                        }));
+                      }}
+                      heightClass="h-[240px] sm:h-[260px]"
+                    />
+                  </div>
                 </section>
               )}
 
@@ -2367,29 +2382,39 @@ export const CheckoutPage: React.FC = () => {
                       </button>
                     </div>
 
-                    <div className="py-3.5 flex items-start justify-between gap-4">
-                      <div className="space-y-0.5 min-w-0">
-                        <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-[#5C5C5C]">
-                          2. Delivery
-                        </p>
-                        <p className="font-medium text-[#0A0A0A]">
-                          {deliveryAddress}, {area}, {city}
-                          {postalCode.trim() ? ` ${postalCode.trim()}` : ''}
-                        </p>
-                        <p className="text-[#5C5C5C]">
-                          {deliveryMethod}
-                          {deliveryNote.trim()
-                            ? ` · Note: "${deliveryNote.trim()}"`
-                            : ''}
-                        </p>
+                    <div className="py-3.5 space-y-3">
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="space-y-0.5 min-w-0">
+                          <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-[#5C5C5C]">
+                            2. Delivery
+                          </p>
+                          <p className="font-medium text-[#0A0A0A]">
+                            {deliveryAddress}, {area}, {city}
+                            {postalCode.trim() ? ` ${postalCode.trim()}` : ''}
+                          </p>
+                          <p className="text-[#5C5C5C]">
+                            {deliveryMethod}
+                            {deliveryNote.trim()
+                              ? ` · Note: "${deliveryNote.trim()}"`
+                              : ''}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => navigateToStep(2)}
+                          className="inline-flex items-center gap-1 text-[11px] font-medium text-[#0A0A0A] hover:underline shrink-0 py-1 cursor-pointer"
+                        >
+                          <Pencil className="h-3 w-3" /> Edit
+                        </button>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => navigateToStep(2)}
-                        className="inline-flex items-center gap-1 text-[11px] font-medium text-[#0A0A0A] hover:underline shrink-0 py-1 cursor-pointer"
-                      >
-                        <Pencil className="h-3 w-3" /> Edit
-                      </button>
+                      <OrderLocationPreviewMap
+                        address={deliveryAddress}
+                        area={area}
+                        city={city}
+                        postalCode={postalCode}
+                        deliveryLocation={deliveryLocation}
+                        heightClass="h-[190px] sm:h-[210px]"
+                      />
                     </div>
 
                     <div className="py-3.5 flex items-start justify-between gap-4">

@@ -43,6 +43,11 @@ import {
 } from '../config/storeConfig';
 import { sanitizeDocId } from '../lib/formatters';
 import {
+  generateUniqueProductCode,
+  isProductCodeTaken,
+  normalizeProductCode,
+} from '../lib/productCode';
+import {
   getSortedCategories,
   isLegacySeedCategorySet,
 } from '../lib/categoryUtils';
@@ -1452,8 +1457,28 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       }
 
       let cleanProduct = clampProductForFirestore(product);
+      const exists = allProducts.some((p) => p.id === cleanProduct.id);
+      let normalizedCode = normalizeProductCode(cleanProduct.sku);
+
+      if (!exists) {
+        if (!normalizedCode || isProductCodeTaken(normalizedCode, allProducts, cleanProduct.id)) {
+          normalizedCode = generateUniqueProductCode(allProducts, cleanProduct.id);
+        }
+      } else if (normalizedCode && isProductCodeTaken(normalizedCode, allProducts, cleanProduct.id)) {
+        throw new Error(
+          `Product Code "${normalizedCode}" is already assigned to another product. Please enter a unique code.`
+        );
+      }
+
+      if (normalizedCode && normalizedCode !== cleanProduct.sku) {
+        cleanProduct = clampProductForFirestore({
+          ...cleanProduct,
+          sku: normalizedCode,
+        });
+      }
+
       if (!cleanProduct.name || !cleanProduct.sku || !cleanProduct.category || cleanProduct.price <= 0) {
-        throw new Error('Product Name, SKU, Category, and valid Price are required.');
+        throw new Error('Product Name, Product Code, Category, and valid Price are required.');
       }
       const hasInvalidImageUrl = cleanProduct.images.some(
         (img) =>
@@ -1476,8 +1501,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           'Product video upload did not finish with a valid storage URL. Please retry the video upload.'
         );
       }
-
-      const exists = allProducts.some((p) => p.id === cleanProduct.id);
 
       // Preserve existing Firestore created_at timestamp so update rules always pass
       try {
@@ -1573,8 +1596,8 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       } else {
         showToast(
           cleanProduct.status === 'Published'
-            ? 'Product published & permanently saved to Cloud Database'
-            : `Product saved as ${cleanProduct.status}`
+            ? `Product published · Code: ${cleanProduct.sku}`
+            : `Product saved (${cleanProduct.status}) · Code: ${cleanProduct.sku}`
         );
       }
       return cleanProduct;
@@ -1586,10 +1609,11 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     async (product: Product): Promise<Product> => {
       const nowIso = new Date().toISOString();
       const suffix = Math.floor(100 + Math.random() * 899);
+      const uniqueCode = generateUniqueProductCode(allProducts);
       const copyPayload: Product = {
         ...product,
         id: sanitizeDocId(`prod-${Date.now()}-${suffix}`),
-        sku: `${product.sku}-COPY-${suffix}`,
+        sku: uniqueCode,
         name: `${product.name} (Copy)`,
         slug: `${product.slug}-copy-${suffix}`,
         status: 'Draft',
@@ -1598,7 +1622,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       };
       return upsertProduct(copyPayload);
     },
-    [upsertProduct]
+    [allProducts, upsertProduct]
   );
 
   const deleteProduct = useCallback(

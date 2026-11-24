@@ -1,9 +1,10 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
-import { Clock, PackageSearch } from 'lucide-react';
+import { Clock, MapPin, PackageSearch } from 'lucide-react';
 import { useStore } from '../context/StoreContext';
 import { formatBDT, isDhakaCity } from '../lib/formatters';
 import { Order } from '../types/ecommerce';
+import { OrderLocationPreviewMap } from '../components/BoutiqueLocatorMap';
 import { BrandLogo } from '../components/BrandLogo';
 import { SeoHead } from '../components/SeoHead';
 import { SuccessCheckmark } from '../components/Motion';
@@ -54,6 +55,21 @@ export const OrderConfirmationPage: React.FC = () => {
   const trackUrl = `/track-order?order=${encodeURIComponent(
     order.orderNumber
   )}&phone=${encodeURIComponent(order.customerPhone)}`;
+
+  const savedPin = useMemo(() => {
+    if (typeof window === 'undefined') return null;
+    try {
+      const raw = window.sessionStorage.getItem('pythox_order_pin_v1');
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as Record<
+        string,
+        { lat: number; lng: number; label: string }
+      >;
+      return parsed[order.orderNumber.toUpperCase()] || null;
+    } catch {
+      return null;
+    }
+  }, [order.orderNumber]);
 
   const inDhaka = isDhakaCity(order.city);
   const expectedDelivery =
@@ -124,6 +140,21 @@ export const OrderConfirmationPage: React.FC = () => {
               <p className="font-mono mt-0.5">Sender: {order.paymentSenderNumber}</p>
             )}
           </div>
+        </div>
+
+        <div className="space-y-2">
+          <p className="inline-flex items-center gap-1.5 font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-[#5C5C5C]">
+            <MapPin className="h-3.5 w-3.5 text-[#0A0A0A]" />
+            <span>Confirmed Delivery Location on Map</span>
+          </p>
+          <OrderLocationPreviewMap
+            address={order.address}
+            area={order.area}
+            city={order.city}
+            postalCode={order.postalCode}
+            deliveryLocation={savedPin}
+            heightClass="h-[210px] sm:h-[230px]"
+          />
         </div>
 
         <div className="rounded-2xl bg-[#F3F2EE] border border-[#D9D9D9] p-5 space-y-3 text-sm tabular-nums">

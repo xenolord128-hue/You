@@ -69,7 +69,17 @@ export async function resolveCloudMediaAssetFallback(
               ? 'image/webp'
               : 'image/webp';
 
-      const binaryStr = atob(data.dataBase64);
+      const cleanedBase64 = data.dataBase64
+        .replace(/^data:[^;]+;base64,/i, '')
+        .replace(/\s+/g, '')
+        .replace(/-/g, '+')
+        .replace(/_/g, '/');
+      const paddedBase64 =
+        cleanedBase64.length % 4 === 0
+          ? cleanedBase64
+          : cleanedBase64.padEnd(cleanedBase64.length + (4 - (cleanedBase64.length % 4)), '=');
+
+      const binaryStr = atob(paddedBase64);
       const len = binaryStr.length;
       const bytes = new Uint8Array(len);
       for (let i = 0; i < len; i += 1) {
@@ -78,7 +88,8 @@ export async function resolveCloudMediaAssetFallback(
       const blobUrl = URL.createObjectURL(new Blob([bytes], { type: mimeType }));
       hydratedMediaCache.set(mediaId, blobUrl);
       return blobUrl;
-    } catch {
+    } catch (error) {
+      console.warn('[cloudMediaFallback] Failed to resolve Firestore media asset:', mediaId, error);
       return null;
     } finally {
       inFlightMediaLookups.delete(mediaId);

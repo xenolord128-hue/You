@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   extractMediaAssetId,
   getCachedCloudMediaUrl,
@@ -19,8 +19,9 @@ export interface CloudMediaImageProps
  * Resilient product/editorial image component that:
  * 1. Resolves cached Firestore `media_assets` blob URLs immediately when available.
  * 2. Proactively hydrates `/api/media/:id` via Firestore if static hosting returned 404/HTML.
- * 3. Resets internal attempt state whenever `src` changes (prevents stale gallery slide bugs).
- * 4. Calls `onAllFailed` cleanly when an image is genuinely unavailable so no broken-image icon renders.
+ * 3. Detects already-complete cached images via `imgRef.current.complete` so load callbacks never stall.
+ * 4. Resets internal attempt state whenever `src` changes and safely cancels stale async lookups.
+ * 5. Calls `onAllFailed` and logs failed URLs cleanly when an image is genuinely unavailable.
  */
 export const CloudMediaImage: React.FC<CloudMediaImageProps> = ({
   src,
@@ -37,8 +38,24 @@ export const CloudMediaImage: React.FC<CloudMediaImageProps> = ({
     () => getCachedCloudMediaUrl(rawSrc) || rawSrc
   );
   const [failed, setFailed] = useState(false);
+
+  const imgRef = useRef<HTMLImageElement | null>(null);
+  const mountedRef = useRef(true);
+  const latestRawSrcRef = useRef(rawSrc);
+  latestRawSrcRef.current = rawSrc;
+
   const onAllFailedRef = useRef(onAllFailed);
   onAllFailedRef.current = onAllFailed;
+
+  const onImageLoadedRef = useRef(onImageLoaded);
+  onImageLoadedRef.current = onImageLoaded;
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -47,23 +64,28 @@ export const CloudMediaImage: React.FC<CloudMediaImageProps> = ({
     if (!rawSrc) {
       setResolvedSrc('');
       setFailed(true);
-      return;
+      return () => {
+        active = false;
+      };
     }
 
     const cached = getCachedCloudMediaUrl(rawSrc);
     if (cached) {
       setResolvedSrc(cached);
-      return;
+      return () => {
+        active = false;
+      };
     }
 
     const mediaId = extractMediaAssetId(rawSrc);
     if (mediaId && isBackendMediaEndpointUnavailable()) {
       setResolvedSrc('');
       void resolveCloudMediaAssetFallback(rawSrc).then((cloudUrl) => {
-        if (!active) return;
+        if (!active || !mountedRef.current) return;
         if (cloudUrl) {
           setResolvedSrc(cloudUrl);
         } else {
+          console.error('[CloudMediaImage] Failed to resolve cloud media fallback:', rawSrc);
           setFailed(true);
           onAllFailedRef.current?.(rawSrc);
         }
@@ -79,6 +101,40 @@ export const CloudMediaImage: React.FC<CloudMediaImageProps> = ({
     };
   }, [rawSrc]);
 
+  const handleImgError = useCallback(() => {
+    const mediaId = extractMediaAssetId(rawSrc);
+    if (mediaId && resolvedSrc === rawSrc) {
+      markBackendMediaEndpointUnavailable();
+      void resolveCloudMediaAssetFallback(rawSrc).then((cloudUrl) => {
+        if (!mountedRef.current || latestRawSrcRef.current !== rawSrc) return;
+        if (cloudUrl) {
+          setResolvedSrc(cloudUrl);
+        } else {
+          console.error('[CloudMediaImage] Image failed on both backend and Firestore fallback:', rawSrc);
+          setFailed(true);
+          onAllFailedRef.current?.(rawSrc);
+        }
+      });
+      return;
+    }
+    console.error('[CloudMediaImage] Image failed to load:', resolvedSrc || rawSrc);
+    setFailed(true);
+    onAllFailedRef.current?.(rawSrc);
+  }, [rawSrc, resolvedSrc]);
+
+  // Immediately recognize browser-cached / blob images whose load completed synchronously
+  useLayoutEffect(() => {
+    const el = imgRef.current;
+    if (!el || failed || !resolvedSrc) return;
+    if (el.complete) {
+      if (el.naturalWidth > 0) {
+        onImageLoadedRef.current?.();
+      } else {
+        handleImgError();
+      }
+    }
+  }, [resolvedSrc, failed, handleImgError]);
+
   if (!rawSrc || failed) {
     return <>{fallback}</>;
   }
@@ -87,32 +143,19 @@ export const CloudMediaImage: React.FC<CloudMediaImageProps> = ({
     return <div aria-hidden="true" className="h-full w-full skeleton-shimmer" />;
   }
 
-  const handleImgError = () => {
-    const mediaId = extractMediaAssetId(rawSrc);
-    if (mediaId && resolvedSrc === rawSrc) {
-      markBackendMediaEndpointUnavailable();
-      void resolveCloudMediaAssetFallback(rawSrc).then((cloudUrl) => {
-        if (cloudUrl) {
-          setResolvedSrc(cloudUrl);
-        } else {
-          setFailed(true);
-          onAllFailedRef.current?.(rawSrc);
-        }
-      });
-      return;
-    }
-    setFailed(true);
-    onAllFailedRef.current?.(rawSrc);
-  };
-
   return (
     <img
+      ref={imgRef}
       key={resolvedSrc}
       src={resolvedSrc}
       alt={alt}
       referrerPolicy={referrerPolicy}
       onLoad={(e) => {
-        onImageLoaded?.();
+        if (e.currentTarget.naturalWidth === 0) {
+          handleImgError();
+          return;
+        }
+        onImageLoadedRef.current?.();
         onLoad?.(e);
       }}
       onError={handleImgError}

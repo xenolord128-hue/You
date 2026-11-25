@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Heart, ShoppingBag, Star } from 'lucide-react';
 import { Product } from '../types/ecommerce';
@@ -17,22 +17,59 @@ export const ProductCard: React.FC<ProductCardProps> = ({
   showBestSellerTag = false,
 }) => {
   const { addToCart, toggleWishlist, isInWishlist } = useStore();
+  const [candidateIdx, setCandidateIdx] = useState(0);
   const [imgError, setImgError] = useState(false);
   const [imgLoaded, setImgLoaded] = useState(false);
 
   const wishlisted = isInWishlist(product.id);
   const discountPct = calculateDiscountPercent(product.price, product.compare_at_price);
 
-  const mainImage = product.primaryImage || product.images[0] || '';
+  const imageCandidates = useMemo(() => {
+    const raw = [product.primaryImage, ...(Array.isArray(product.images) ? product.images : [])];
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const entry of raw) {
+      if (typeof entry !== 'string') continue;
+      const trimmed = entry.trim();
+      if (!trimmed || seen.has(trimmed)) continue;
+      seen.add(trimmed);
+      out.push(trimmed);
+    }
+    return out;
+  }, [product.primaryImage, product.images]);
+
+  const candidateKey = `${product.id}::${imageCandidates.join('|')}`;
+  const prevKeyRef = useRef(candidateKey);
 
   useEffect(() => {
-    setImgError(false);
-    setImgLoaded(false);
-  }, [mainImage]);
+    if (prevKeyRef.current !== candidateKey) {
+      prevKeyRef.current = candidateKey;
+      setCandidateIdx(0);
+      setImgError(false);
+      setImgLoaded(false);
+    }
+  }, [candidateKey]);
 
-  const handleImageFailed = useCallback(() => {
-    setImgError(true);
-  }, []);
+  const mainImage = imageCandidates[candidateIdx] || '';
+
+  const handleImageFailed = useCallback(
+    (failedUrl: string) => {
+      console.error('[ProductCard] Product image failed to load:', {
+        productId: product.id,
+        productName: product.name,
+        failedUrl,
+        candidateIdx,
+        totalCandidates: imageCandidates.length,
+      });
+      if (candidateIdx + 1 < imageCandidates.length) {
+        setCandidateIdx((prev) => prev + 1);
+        setImgLoaded(false);
+      } else {
+        setImgError(true);
+      }
+    },
+    [product.id, product.name, candidateIdx, imageCandidates.length]
+  );
 
   const handleImageLoaded = useCallback(() => {
     setImgLoaded(true);
@@ -62,34 +99,35 @@ export const ProductCard: React.FC<ProductCardProps> = ({
         className="block h-full w-full relative"
         aria-label={`View ${product.name}`}
       >
-        {!imgError && mainImage ? (
-          <>
-            {!imgLoaded && (
-              <div aria-hidden="true" className="absolute inset-0 skeleton-shimmer" />
-            )}
-            <CloudMediaImage
-              key={mainImage}
-              src={mainImage}
-              alt={product.name}
-              loading="lazy"
-              onImageLoaded={handleImageLoaded}
-              onAllFailed={handleImageFailed}
-              className={`h-full w-full object-cover object-center transition-[transform,opacity] duration-500 ease-out [@media(hover:hover)]:group-hover:scale-105 ${
-                imgLoaded ? 'opacity-100' : 'opacity-0'
-              }`}
-            />
-          </>
-        ) : (
-          <div className="flex h-full w-full flex-col items-center justify-center bg-[#EAE9E4] p-4 text-center">
-            <ShoppingBag className="h-7 w-7 text-[#5C5C5C] mb-2" />
-            <span className="font-editorial text-sm font-bold text-[#0A0A0A]">{product.name}</span>
-          </div>
-        )}
+        <div className="absolute inset-0 overflow-hidden bg-[#EAE9E4]">
+          {!imgError && mainImage ? (
+            <>
+              {!imgLoaded && (
+                <div aria-hidden="true" className="absolute inset-0 z-0 skeleton-shimmer" />
+              )}
+              <CloudMediaImage
+                key={mainImage}
+                src={mainImage}
+                alt={product.name}
+                loading="eager"
+                decoding="async"
+                onImageLoaded={handleImageLoaded}
+                onAllFailed={handleImageFailed}
+                className="relative z-[1] h-full w-full object-cover object-center transition-transform duration-500 ease-out [@media(hover:hover)]:group-hover:scale-105"
+              />
+            </>
+          ) : (
+            <div className="flex h-full w-full flex-col items-center justify-center bg-[#EAE9E4] p-4 text-center">
+              <ShoppingBag className="h-7 w-7 text-[#5C5C5C] mb-2" />
+              <span className="font-editorial text-sm font-bold text-[#0A0A0A]">{product.name}</span>
+            </div>
+          )}
+        </div>
 
         {/* Bottom Dark Monochrome Vignette Gradient */}
         <div
           aria-hidden="true"
-          className="absolute inset-0 bg-gradient-to-t from-[#0A0A0A]/95 via-[#0A0A0A]/30 to-transparent pointer-events-none"
+          className="absolute inset-0 z-[2] bg-gradient-to-t from-[#0A0A0A]/95 via-[#0A0A0A]/30 to-transparent pointer-events-none"
         />
 
         {/* Top-Left Badge: SOLD OUT, BEST SELLER, Discount, or NEW */}

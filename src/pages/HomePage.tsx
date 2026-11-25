@@ -98,6 +98,8 @@ const BENEFIT_ITEMS = [
 export const HomePage: React.FC = () => {
   const { products, bestSellers, productsLoading, productsError, refreshProducts, settings } = useStore();
   const [brokenImg, setBrokenImg] = useState<Record<string, boolean>>({});
+  const [featuredImgIdx, setFeaturedImgIdx] = useState<Record<string, number>>({});
+  const [featuredImgLoaded, setFeaturedImgLoaded] = useState<Record<string, boolean>>({});
 
   const topBestSellers = useMemo(() => bestSellers.slice(0, 5), [bestSellers]);
 
@@ -577,7 +579,28 @@ export const HomePage: React.FC = () => {
           ) : (
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3.5 sm:gap-5">
               {featuredProducts.map((product) => {
-                const imgSrc = product.primaryImage || product.images[0] || '';
+                const rawCandidates = [
+                  product.primaryImage,
+                  ...(Array.isArray(product.images) ? product.images : []),
+                ];
+                const imgCandidates: string[] = [];
+                const seenCandidates = new Set<string>();
+                for (const entry of rawCandidates) {
+                  if (typeof entry !== 'string') continue;
+                  const trimmed = entry.trim();
+                  if (!trimmed || seenCandidates.has(trimmed)) continue;
+                  seenCandidates.add(trimmed);
+                  imgCandidates.push(trimmed);
+                }
+
+                const activeIdx = Math.min(
+                  featuredImgIdx[product.id] ?? 0,
+                  Math.max(0, imgCandidates.length - 1)
+                );
+                const imgSrc = imgCandidates[activeIdx] || '';
+                const imgStateKey = `${product.id}::${imgSrc}`;
+                const isLoaded = Boolean(featuredImgLoaded[imgStateKey]);
+
                 return (
                   <Link
                     key={product.id}
@@ -585,15 +608,42 @@ export const HomePage: React.FC = () => {
                     className="group block"
                   >
                     <div className="aspect-[4/5] rounded-2xl bg-[#E8E7E3] border border-[#E0DFDA] overflow-hidden relative shadow-xs">
-                      {imgSrc && !brokenImg[product.id] ? (
-                        <CloudMediaImage
-                          key={imgSrc}
-                          src={imgSrc}
-                          alt={product.name}
-                          loading="lazy"
-                          onAllFailed={() => markBroken(product.id)}
-                          className="h-full w-full object-cover object-center transition-transform duration-500 ease-out [@media(hover:hover)]:group-hover:scale-[1.03]"
-                        />
+                      {imgSrc && !brokenImg[imgStateKey] ? (
+                        <>
+                          {!isLoaded && (
+                            <div aria-hidden="true" className="absolute inset-0 z-0 skeleton-shimmer" />
+                          )}
+                          <CloudMediaImage
+                            key={imgSrc}
+                            src={imgSrc}
+                            alt={product.name}
+                            loading="eager"
+                            decoding="async"
+                            onImageLoaded={() =>
+                              setFeaturedImgLoaded((prev) =>
+                                prev[imgStateKey] ? prev : { ...prev, [imgStateKey]: true }
+                              )
+                            }
+                            onAllFailed={(failedUrl) => {
+                              console.error('[HomePage:FeaturedProducts] Product image failed to load:', {
+                                productId: product.id,
+                                productName: product.name,
+                                failedUrl,
+                                candidateIdx: activeIdx,
+                                totalCandidates: imgCandidates.length,
+                              });
+                              if (activeIdx + 1 < imgCandidates.length) {
+                                setFeaturedImgIdx((prev) => ({
+                                  ...prev,
+                                  [product.id]: activeIdx + 1,
+                                }));
+                              } else {
+                                markBroken(imgStateKey);
+                              }
+                            }}
+                            className="relative z-[1] h-full w-full object-cover object-center transition-transform duration-500 ease-out [@media(hover:hover)]:group-hover:scale-[1.03]"
+                          />
+                        </>
                       ) : (
                         <div className="h-full w-full flex flex-col items-center justify-center bg-[#E4E3DF] text-[#6A6A6A] p-4 text-center">
                           <Shirt className="h-6 w-6 mb-1.5" />
